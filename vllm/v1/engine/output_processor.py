@@ -269,6 +269,7 @@ class RequestState:
     def make_request_output(
         self,
         new_token_ids: list[int],
+        new_hidden_states: torch.Tensor | None,
         pooling_output: torch.Tensor | None,
         finish_reason: FinishReason | None,
         stop_reason: int | str | None,
@@ -315,7 +316,7 @@ class RequestState:
             )
 
         output = self._new_completion_output(
-            new_token_ids, finish_reason, stop_reason, routed_experts
+            new_token_ids, new_hidden_states, finish_reason, stop_reason, routed_experts
         )
 
         if self.parent_req is None:
@@ -376,6 +377,7 @@ class RequestState:
     def _new_completion_output(
         self,
         token_ids: list[int],
+        hidden_states: torch.Tensor | None,
         finish_reason: FinishReason | None,
         stop_reason: int | str | None,
         routed_experts: np.ndarray | None = None,
@@ -399,6 +401,7 @@ class RequestState:
             index=self.request_index,
             text=text,
             token_ids=token_ids,
+            hidden_states=hidden_states,
             routed_experts=routed_experts,
             logprobs=logprobs,
             cumulative_logprob=self.logprobs_processor.cumulative_logprob,
@@ -485,6 +488,7 @@ class OutputProcessor:
                 if req_state.queue is not None and (
                     request_output := req_state.make_request_output(
                         new_token_ids=[],
+                        new_hidden_states=None,
                         # Set pooling_output is not None to
                         # correctly enter the abort pooling branch
                         pooling_output=EMPTY_CPU_TENSOR
@@ -612,6 +616,7 @@ class OutputProcessor:
             )
 
             new_token_ids = engine_core_output.new_token_ids
+            new_hidden_states = engine_core_output.new_hidden_states
             pooling_output = engine_core_output.pooling_output
             finish_reason = engine_core_output.finish_reason
             stop_reason = engine_core_output.stop_reason
@@ -638,6 +643,7 @@ class OutputProcessor:
             # 4) Create and handle RequestOutput objects.
             if request_output := req_state.make_request_output(
                 new_token_ids,
+                new_hidden_states,
                 pooling_output,
                 finish_reason,
                 stop_reason,

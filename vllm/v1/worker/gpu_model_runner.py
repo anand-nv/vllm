@@ -4053,6 +4053,17 @@ class GPUModelRunner(
         kv_connector_output = self.kv_connector_output
         self.kv_connector_output = None
 
+        # Extract hidden states per request
+        num_reqs = self.input_batch.num_reqs
+        query_start_loc_np = self.query_start_loc.np[:num_reqs]
+        hidden_states_list = []
+        for i in range(num_reqs):
+            start = int(query_start_loc_np[i])
+            end = int(num_scheduled_tokens_np[i])
+            hidden_states_list.append(
+                hidden_states[start:end].cpu()
+            )
+
         with record_function_or_nullcontext("gpu_model_runner: ModelRunnerOutput"):
             if self.routed_experts_initialized:
                 capturer = RoutedExpertsCapturer.get_instance()
@@ -4067,6 +4078,7 @@ class GPUModelRunner(
                 sampled_token_ids=valid_sampled_token_ids,
                 logprobs=logprobs_lists,
                 prompt_logprobs_dict=prompt_logprobs_dict,
+                hidden_states=hidden_states_list,
                 kv_connector_output=kv_connector_output,
                 ec_connector_output=ec_connector_output
                 if self.supports_mm_inputs

@@ -41,6 +41,7 @@ class CompletionOutput:
     index: int
     text: str
     token_ids: GenericSequence[int]
+    hidden_states: Optional[torch.Tensor]
     cumulative_logprob: Optional[float]
     logprobs: Optional[SampleLogprobs]
     finish_reason: Optional[str] = None
@@ -55,6 +56,7 @@ class CompletionOutput:
             f"CompletionOutput(index={self.index}, "
             f"text={self.text!r}, "
             f"token_ids={self.token_ids}, "
+            f"hidden_states={self.hidden_states.shape if self.hidden_states is not None else None}, "
             f"cumulative_logprob={self.cumulative_logprob}, "
             f"logprobs={self.logprobs}, "
             f"finish_reason={self.finish_reason}, "

@@ -2711,6 +2711,17 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         with record_function_or_nullcontext("EPLB"):
             self.eplb_step()
 
+        # Extract hidden states per request
+        num_reqs = self.input_batch.num_reqs
+        query_start_loc_np = self.query_start_loc.np[:num_reqs]
+        hidden_states_list = []
+        for i in range(num_reqs):
+            start = int(query_start_loc_np[i])
+            end = int(num_scheduled_tokens_np[i])
+            hidden_states_list.append(
+                hidden_states[start:end].cpu()
+            )
+
         output = ModelRunnerOutput(
             req_ids=req_ids_output_copy,
             req_id_to_index=req_id_to_index_output_copy,
@@ -2720,6 +2731,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             pooler_output=[],
             kv_connector_output=kv_connector_output,
             num_nans_in_logits=num_nans_in_logits,
+            hidden_states=hidden_states_list,
         )
 
         if not self.use_async_scheduling:

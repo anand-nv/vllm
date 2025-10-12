@@ -4086,16 +4086,18 @@ class GPUModelRunner(
         kv_connector_output = self.kv_connector_output
         self.kv_connector_output = None
 
-        # Extract hidden states per request
-        num_reqs = self.input_batch.num_reqs
-        query_start_loc_np = self.query_start_loc.np[:num_reqs]
-        hidden_states_list = []
-        for i in range(num_reqs):
-            start = int(query_start_loc_np[i])
-            length = int(num_scheduled_tokens_np[i])
-            hidden_states_list.append(
-                hidden_states[start:start+length].cpu()
-            )
+        hidden_states_list = None
+        if self.model_config.return_hidden_states:
+            # Extract hidden states per request
+            num_reqs = self.input_batch.num_reqs
+            query_start_loc_np = self.query_start_loc.np[:num_reqs]
+            hidden_states_list = []
+            for i in range(num_reqs):
+                start = int(query_start_loc_np[i])
+                length = int(num_scheduled_tokens_np[i])
+                hidden_states_list.append(
+                    hidden_states[start:start+length].cpu()
+                )
 
         with record_function_or_nullcontext("gpu_model_runner: ModelRunnerOutput"):
             if self.routed_experts_initialized:

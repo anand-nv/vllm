@@ -2717,9 +2717,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         hidden_states_list = []
         for i in range(num_reqs):
             start = int(query_start_loc_np[i])
-            end = int(num_scheduled_tokens_np[i])
+            length = int(num_scheduled_tokens_np[i])
             hidden_states_list.append(
-                hidden_states[start:end].cpu()
+                hidden_states[start:start+length].cpu()
             )
 
         output = ModelRunnerOutput(

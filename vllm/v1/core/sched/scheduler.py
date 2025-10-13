@@ -8,6 +8,7 @@ from dataclasses import replace
 from typing import Any
 
 import numpy as np
+import torch
 
 from vllm import envs
 from vllm.compilation.cuda_graph import CUDAGraphStat
@@ -374,6 +375,12 @@ class Scheduler(SchedulerInterface):
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
+
+            if not request.has_next_input_embeds():
+                # request cannot be scheduled because next input embeddings
+                # are not set yet
+                req_index += 1
+                continue
 
             if (
                 request.num_output_placeholders > 0
@@ -1040,6 +1047,7 @@ class Scheduler(SchedulerInterface):
         num_computed_tokens: list[int] = []
         num_output_tokens: list[int] = []
         resumed_req_ids = set()
+        new_input_embeds: list[torch.Tensor] = []
 
         num_running_reqs = len(running_reqs)
         for idx, req in enumerate(itertools.chain(running_reqs, resumed_reqs)):
@@ -1074,6 +1082,9 @@ class Scheduler(SchedulerInterface):
             num_output_tokens.append(
                 req.num_output_tokens + req.num_output_placeholders
             )
+            # TODO: in `schedule` add a check that input_embeds are set
+            # for resumed_reqs
+            new_input_embeds.append(req.read_next_input_embeds())
 
         return CachedRequestData(
             req_ids=req_ids,
@@ -1083,6 +1094,7 @@ class Scheduler(SchedulerInterface):
             new_block_ids=new_block_ids,
             num_computed_tokens=num_computed_tokens,
             num_output_tokens=num_output_tokens,
+            new_input_embeds=new_input_embeds,
         )
 
     def _try_schedule_encoder_inputs(
@@ -1726,6 +1738,16 @@ class Scheduler(SchedulerInterface):
             self.requests[request.request_id] = request
             if self.log_stats:
                 request.record_event(EngineCoreEventType.QUEUED)
+
+    def set_input_embeds(self, request_id: str, input_embeds: torch.Tensor) -> None:
+        """
+        Sets input embeddings for a request.
+        This allows the request to be scheduled for execution.
+        """
+        request = self.requests.get(request_id)
+        if request is None:
+            raise ValueError(f"Request {request_id} not found")
+        request.set_next_input_embeds(input_embeds)
 
     def finish_requests(
         self, request_ids: str | Iterable[str] | None, finished_status: RequestStatus

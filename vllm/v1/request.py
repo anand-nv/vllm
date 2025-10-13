@@ -46,6 +46,7 @@ class Request:
         priority: int = 0,
         trace_headers: Optional[Mapping[str, str]] = None,
         block_hasher: Optional[Callable[["Request"], list["BlockHash"]]] = None,
+        is_streaming: Optional[bool] = None,
     ) -> None:
         self.request_id = request_id
         self.client_index = client_index
@@ -62,6 +63,8 @@ class Request:
         self.use_structured_output = False
         self.events: list[EngineCoreEvent] = []
         self.stop_reason: Union[int, str, None] = None
+
+        self.is_streaming = is_streaming
 
         # P/D: Connector-specific KV transfer parameters.
         self.kv_transfer_params: Optional[dict[str, Any]] = None
@@ -159,6 +162,7 @@ class Request:
             priority=request.priority,
             trace_headers=request.trace_headers,
             block_hasher=block_hasher,
+            is_streaming=request.is_streaming,
         )
 
     def append_output_token_ids(

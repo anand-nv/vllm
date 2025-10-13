@@ -264,6 +264,7 @@ class AsyncLLM(EngineClient):
         priority: int = 0,
         data_parallel_rank: Optional[int] = None,
         prompt_text: Optional[str] = None,
+        is_streaming: Optional[bool] = None,
     ) -> RequestOutputCollector:
         """Add new request to the AsyncLLM."""
 
@@ -294,6 +295,7 @@ class AsyncLLM(EngineClient):
                 trace_headers,
                 priority,
                 data_parallel_rank,
+                is_streaming,
             )
             prompt_text = prompt if isinstance(prompt, str) else prompt.get("prompt")
 
@@ -362,6 +364,7 @@ class AsyncLLM(EngineClient):
         trace_headers: Optional[Mapping[str, str]] = None,
         priority: int = 0,
         data_parallel_rank: Optional[int] = None,
+        is_streaming: Optional[bool] = None,
     ) -> AsyncGenerator[RequestOutput, None]:
         """
         Main function called by the API server to kick off a request
@@ -414,6 +417,7 @@ class AsyncLLM(EngineClient):
                 priority=priority,
                 data_parallel_rank=data_parallel_rank,
                 prompt_text=prompt_text,
+                is_streaming=is_streaming,
             )
 
             # The output_handler task pushes items into the queue.

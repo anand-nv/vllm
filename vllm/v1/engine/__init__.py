@@ -57,6 +57,7 @@ class EngineCoreRequest(
     lora_request: Optional[LoRARequest]
     cache_salt: Optional[str]
     data_parallel_rank: Optional[int]
+    is_streaming: Optional[bool]
     prompt_embeds: Optional[torch.Tensor] = None
 
     # Index of the client, used to ensure outputs are sent back to the same

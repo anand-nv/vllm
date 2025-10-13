@@ -376,7 +376,7 @@ class Scheduler(SchedulerInterface):
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
 
-            if not request.has_next_input_embeds():
+            if request.is_streaming and not request.has_next_input_embeds():
                 # request cannot be scheduled because next input embeddings
                 # are not set yet
                 self.running.pop(req_index)
@@ -1747,6 +1747,8 @@ class Scheduler(SchedulerInterface):
         request = self.requests.get(request_id)
         if request is None:
             raise ValueError(f"Request {request_id} not found")
+        if not request.is_streaming:
+            raise ValueError(f"Request {request_id} is not a streaming request")
         request.set_next_input_embeds(input_embeds)
         self.running.append(request)
 

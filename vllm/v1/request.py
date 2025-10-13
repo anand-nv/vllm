@@ -5,6 +5,7 @@ import enum
 import time
 from collections.abc import Mapping
 from functools import partial
+import threading
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import torch
@@ -85,6 +86,10 @@ class Request:
 
         self.prompt_token_ids = prompt_token_ids
         self.prompt_embeds = prompt_embeds
+        self.next_input_embeds: Optional[torch.Tensor] = None
+        # for a running request, scheduler will wait for event to be set.
+        # for new request, prompt embeds are used
+        self._next_input_embeds_ready = threading.Event()
         self.num_prompt_tokens = length_from_prompt_token_ids_or_embeds(
             prompt_token_ids, prompt_embeds
         )
@@ -210,6 +215,18 @@ class Request:
         events, self.events = self.events, []
         return events
 
+    def set_next_input_embeds(self, input_embeds: torch.Tensor) -> None:
+        self.next_input_embeds = input_embeds
+        self._next_input_embeds_ready.set()
+
+    def read_next_input_embeds(self) -> Optional[torch.Tensor]:
+        # clear, so request does not get scheduled again, before
+        # another `set_next_input_embeds` is called
+        self._next_input_embeds_ready.clear()
+        return self.next_input_embeds
+
+    def has_next_input_embeds(self) -> bool:
+        return self._next_input_embeds_ready.is_set()
 
 class RequestStatus(enum.IntEnum):
     """Status of a request."""

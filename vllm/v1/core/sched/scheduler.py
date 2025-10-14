@@ -9,6 +9,8 @@ from collections import defaultdict
 from collections.abc import Iterable
 from typing import Any, Union
 
+import torch
+
 from vllm.config import VllmConfig
 from vllm.distributed.kv_events import EventPublisherFactory, KVEventBatch
 from vllm.distributed.kv_transfer.kv_connector.factory import KVConnectorFactory
@@ -59,6 +61,7 @@ class Scheduler(SchedulerInterface):
         self.log_stats = log_stats
         self.structured_output_manager = structured_output_manager
         self.is_encoder_decoder = vllm_config.model_config.is_encoder_decoder
+        self.return_hidden_states = vllm_config.model_config.return_hidden_states
 
         # include_finished_set controls whether a separate set of finished
         # request ids should be included in the EngineCoreOutputs returned
@@ -210,6 +213,12 @@ class Scheduler(SchedulerInterface):
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
+
+            if request.is_streaming and not request.has_next_input_embeds():
+                # request cannot be scheduled because next input embeddings
+                # are not set yet
+                self.running.pop(req_index)
+                continue
 
             num_new_tokens = (
                 request.num_tokens_with_spec
@@ -711,6 +720,7 @@ class Scheduler(SchedulerInterface):
         new_block_ids: list[tuple[list[int], ...] | None] = []
         num_computed_tokens: list[int] = []
         num_output_tokens: list[int] = []
+        new_input_embeds: list[torch.Tensor] = []
 
         use_connector = self.connector is not None
         for req in itertools.chain(running_reqs, resumed_reqs):
@@ -739,6 +749,10 @@ class Scheduler(SchedulerInterface):
             )
             num_computed_tokens.append(req.num_computed_tokens)
             num_output_tokens.append(len(req.output_token_ids))
+            # TODO: in `schedule` add a check that input_embeds are set
+            # for resumed_reqs
+            new_input_embeds.append(req.read_next_input_embeds())
+
         # Because resumed_reqs is usually empty, it is more efficient to do
         # in-place appending so that we don't need to allocate a new list.
         resumed_from_preemption = [False] * len(running_reqs)
@@ -751,6 +765,7 @@ class Scheduler(SchedulerInterface):
             new_block_ids=new_block_ids,
             num_computed_tokens=num_computed_tokens,
             num_output_tokens=num_output_tokens,
+            new_input_embeds=new_input_embeds,
         )
 
     def _try_schedule_encoder_inputs(
@@ -1022,6 +1037,10 @@ class Scheduler(SchedulerInterface):
             if num_nans_in_logits is not None and req_id in num_nans_in_logits:
                 request.num_nans_in_logits = num_nans_in_logits[req_id]
 
+            hidden_states = None
+            if self.return_hidden_states:
+                hidden_states = model_runner_output.hidden_states[req_index]
+
             # Get prompt logprobs for this request.
             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
             if new_token_ids or pooler_output is not None or kv_transfer_params:
@@ -1032,6 +1051,7 @@ class Scheduler(SchedulerInterface):
                         new_token_ids=new_token_ids,
                         finish_reason=request.get_finished_reason(),
                         new_logprobs=new_logprobs,
+                        new_hidden_states=hidden_states,
                         new_prompt_logprobs_tensors=prompt_logprobs_tensors,
                         pooling_output=pooler_output,
                         stop_reason=request.stop_reason,
@@ -1167,6 +1187,19 @@ class Scheduler(SchedulerInterface):
         self.requests[request.request_id] = request
         if self.log_stats:
             request.record_event(EngineCoreEventType.QUEUED)
+
+    def set_input_embeds(self, request_id: str, input_embeds: torch.Tensor) -> None:
+        """
+        Sets input embeddings for a request.
+        This allows the request to be scheduled for execution.
+        """
+        request = self.requests.get(request_id)
+        if request is None:
+            raise ValueError(f"Request {request_id} not found")
+        if not request.is_streaming:
+            raise ValueError(f"Request {request_id} is not a sampling request")
+        request.set_next_input_embeds(input_embeds)
+        self.running.append(request)
 
     def finish_requests(
         self,

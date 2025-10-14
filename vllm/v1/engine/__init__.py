@@ -57,6 +57,7 @@ class EngineCoreRequest(
     lora_request: Optional[LoRARequest]
     cache_salt: Optional[str]
     data_parallel_rank: Optional[int]
+    is_streaming: Optional[bool]
     prompt_embeds: Optional[torch.Tensor] = None
 
     # Index of the client, used to ensure outputs are sent back to the same
@@ -109,6 +110,7 @@ class EngineCoreOutput(
     new_token_ids: list[int]
 
     new_logprobs: Optional[LogprobsLists] = None
+    new_hidden_states: Optional[torch.Tensor] = None
     new_prompt_logprobs_tensors: Optional[LogprobsTensors] = None
 
     pooling_output: Optional[torch.Tensor] = None
@@ -189,6 +191,7 @@ class EngineCoreRequestType(enum.Enum):
     UTILITY = b"\x03"
     # Sentinel used within EngineCoreProc.
     EXECUTOR_FAILED = b"\x04"
+    APPEND = b"\x05"
 
 
 class ReconfigureDistributedRequest(msgspec.Struct):

@@ -116,6 +116,9 @@ class ModelRunnerOutput:
     # [num_reqs]
     logprobs: Optional[LogprobsLists]
 
+    # [num_reqs] where each element is [num_tokens, hidden_size]
+    hidden_states: Optional[list[torch.Tensor]]
+
     # req_id -> (token_ids, logprobs, ranks)
     # [prompt_len, num_prompt_logprobs]
     # [prompt_len, num_prompt_logprobs]
@@ -157,6 +160,7 @@ EMPTY_MODEL_RUNNER_OUTPUT = ModelRunnerOutput(
     req_id_to_index={},
     sampled_token_ids=[],
     logprobs=None,
+    hidden_states=None,
     prompt_logprobs_dict={},
     pooler_output=[],
     num_nans_in_logits=None,

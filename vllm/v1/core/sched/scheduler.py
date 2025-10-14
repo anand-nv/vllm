@@ -127,6 +127,9 @@ class Scheduler(SchedulerInterface):
         # Priority queues for requests.
         self.waiting = create_request_queue(self.policy)
         self.running: list[Request] = []
+        # contains reques_ids of the requests that are not currently running,
+        # but waiting for the inputs to be set
+        self.waiting_input: set[str] = set()
 
         # The request IDs that are finished in between the previous and the
         # current steps. This is used to notify the workers about the finished
@@ -217,6 +220,7 @@ class Scheduler(SchedulerInterface):
                 # request cannot be scheduled because next input embeddings
                 # are not set yet
                 self.running.pop(req_index)
+                self.waiting_input.add(request.request_id)
                 continue
 
             num_new_tokens = (
@@ -1196,7 +1200,9 @@ class Scheduler(SchedulerInterface):
         if not request.is_streaming:
             raise ValueError(f"Request {request_id} is not a streaming request")
         request.set_next_input_embeds(input_embeds)
-        self.running.append(request)
+        if request_id in self.waiting_input:
+            self.waiting_input.remove(request_id)
+            self.running.append(request)
 
     def finish_requests(
         self,

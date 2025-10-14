@@ -122,6 +122,8 @@ class RequestState:
         self.queue = queue
         self.num_cached_tokens = 0
 
+        self.cumulative_hidden_states: Optional[list[torch.Tensor]] = None
+
         self.stats = RequestStateStats(arrival_time=arrival_time) if log_stats else None
 
     @classmethod
@@ -277,7 +279,10 @@ class RequestState:
         # Prepare text and token_ids, based on delta mode
         text = self.detokenizer.get_next_output_text(finished, delta)
         if not delta:
+            hidden_states = self.cumulative_hidden_states
             token_ids = self.detokenizer.output_token_ids
+        else:
+            hidden_states = [hidden_states]
 
         # Prepare logprobs, based on delta mode
         logprobs = self.logprobs_processor.logprobs
@@ -453,7 +458,14 @@ class OutputProcessor:
                 # if required.
                 req_state.logprobs_processor.update_from_output(engine_core_output)
 
-            # 4) Create and handle RequestOutput objects.
+                # 4) Update the cumulative hidden states.
+                if new_hidden_states is not None:
+                    if req_state.cumulative_hidden_states is None:
+                        req_state.cumulative_hidden_states = [new_hidden_states]
+                    else:
+                        req_state.cumulative_hidden_states.append(new_hidden_states)
+
+            # 5) Create and handle RequestOutput objects.
             if request_output := req_state.make_request_output(
                 new_token_ids,
                 new_hidden_states,

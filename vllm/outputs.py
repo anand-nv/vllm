@@ -56,7 +56,7 @@ class CompletionOutput:
             f"CompletionOutput(index={self.index}, "
             f"text={self.text!r}, "
             f"token_ids={self.token_ids}, "
-            f"hidden_states={self.hidden_states.shape if self.hidden_states is not None else None}, "
+            f"hidden_states={len(self.hidden_states) if self.hidden_states is not None else None}, "
             f"cumulative_logprob={self.cumulative_logprob}, "
             f"logprobs={self.logprobs}, "
             f"finish_reason={self.finish_reason}, "

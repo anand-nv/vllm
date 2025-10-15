@@ -48,6 +48,7 @@ from vllm.model_executor.layers.mamba.abstract import MambaBase
 from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding
 from vllm.model_executor.model_loader import TensorizerLoader, get_model_loader
 from vllm.model_executor.models.deepseek_v2 import DeepseekV32IndexerCache
+from vllm.model_executor.models.fastconformer import FastConformerCache
 from vllm.model_executor.models.interfaces import (
     SupportsMultiModal,
     is_mixture_of_experts,
@@ -4273,6 +4274,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                         kv_cache_spec.head_size,
                         cache_dtype_str=self.cache_config.cache_dtype,
                     )
+                    print(f"debug: kv_cache_shape: {kv_cache_shape}")
                     dtype = kv_cache_spec.dtype
                     try:
                         kv_cache_stride_order = attn_backend.get_kv_cache_stride_order()
@@ -4595,6 +4597,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         )
         for layer_name, ds_indexer_module in ds_indexer_layers.items():
             kv_cache_spec[layer_name] = ds_indexer_module.get_kv_cache_spec()
+
+        fastconformer_layers = get_layers_from_vllm_config(
+            self.vllm_config, FastConformerCache
+        )
+        print(f"debug: fastconformer_layers: {fastconformer_layers}")
+        for layer_name, fastconformer_module in fastconformer_layers.items():
+            kv_cache_spec[layer_name] = fastconformer_module.get_kv_cache_spec()
 
         return kv_cache_spec
 

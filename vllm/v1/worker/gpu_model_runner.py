@@ -5346,6 +5346,9 @@ class GPUModelRunner(
         self,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
+        # Check if hidden states is an integer tensor (long or int32)
+        is_int_tensor = hidden_states.dtype in (torch.int32, torch.int64, torch.long, torch.int16)
+        
         # The dummy hidden states may contain special values,
         # like `inf` or `nan`.
         # To avoid breaking the sampler, we use a random tensor here instead.
@@ -5355,12 +5358,17 @@ class GPUModelRunner(
             # MM Encoder only model no need to run sampler.
             return torch.tensor([])
 
-        hidden_states = torch.rand_like(hidden_states)
+        # Skip randomization for integer tensors.
+        if not is_int_tensor:
+            hidden_states = torch.rand_like(hidden_states)
 
         logits = self.model.compute_logits(hidden_states)
         num_reqs = logits.size(0)
 
         dummy_tensors = lambda v: torch.full((num_reqs,), v, device=self.device)
+
+        # Skip sampling for integer tensors
+        skip_sampling = is_int_tensor
 
         dummy_metadata = SamplingMetadata(
             temperature=dummy_tensors(0.5),
@@ -5380,12 +5388,18 @@ class GPUModelRunner(
             allowed_token_ids_mask=None,
             bad_words_token_ids={},
             logitsprocs=LogitsProcessors(),
-            skip_sampling=False,
+            skip_sampling=skip_sampling,
         )
         try:
-            sampler_output = self.sampler(
-                logits=logits, sampling_metadata=dummy_metadata
-            )
+            if skip_sampling:
+                sampler_output = SamplerOutput(
+                    sampled_token_ids=torch.zeros((num_reqs, 1), dtype=torch.int32, device="cpu"),
+                    logprobs_tensors=None,
+                )
+            else:
+                sampler_output = self.sampler(
+                    logits=logits, sampling_metadata=dummy_metadata
+                )
         except RuntimeError as e:
             if "out of memory" in str(e):
                 raise RuntimeError(

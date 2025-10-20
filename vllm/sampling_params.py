@@ -220,6 +220,10 @@ class SamplingParams(
     generated token can complete the sequence."""
     _bad_words_token_ids: Optional[list[list[int]]] = None
 
+    # skip sampling in case sampling is not needed (streaming encoders)
+    # or custom sampling happens inside model definition
+    skip_sampling: bool = False
+
     @staticmethod
     def from_optional(
         n: Optional[int] = 1,

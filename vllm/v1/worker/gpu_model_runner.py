@@ -2281,10 +2281,16 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self,
         logits: Optional[torch.Tensor],
         spec_decode_metadata: Optional[SpecDecodeMetadata],
-    ) -> SamplerOutput:
+    ) -> SamplerOutput:    
         # Sample the next token and get logprobs if needed.
         sampling_metadata = self.input_batch.sampling_metadata
-        if spec_decode_metadata is None:
+        if sampling_metadata.skip_sampling:
+            num_reqs = self.input_batch.num_reqs
+            sampler_output = SamplerOutput(
+                sampled_token_ids=torch.zeros((num_reqs, 1), dtype=torch.int32, device="cpu"),
+                logprobs_tensors=None,
+            )
+        elif spec_decode_metadata is None:
             sampler_output = self.sampler(
                 logits=logits,
                 sampling_metadata=sampling_metadata,
@@ -3624,6 +3630,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             allowed_token_ids_mask=None,
             bad_words_token_ids={},
             logitsprocs=LogitsProcessors(),
+            skip_sampling=False,
         )
         try:
             sampler_output = self.sampler(

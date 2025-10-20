@@ -261,6 +261,9 @@ class InputBatch:
         # Store last speculative tokens for sampler.
         self.spec_token_ids: list[list[int]] = [[] for _ in range(max_num_reqs)]
 
+        # skip sampling is defined based on all the requests in the batch
+        self.skip_sampling = True
+
         # This is updated each time the batch constituents change.
         self.sampling_metadata = self._make_sampling_metadata()
 
@@ -352,6 +355,9 @@ class InputBatch:
         self.block_table.add_row(request.block_ids, req_index)
 
         if sampling_params := request.sampling_params:
+            if self.is_spec_decode and is_spec_decode_unsupported(sampling_params):
+                self.spec_decode_unsupported_reqs.add(req_id)
+            self.skip_sampling &= sampling_params.skip_sampling
             if sampling_params.sampling_type == SamplingType.GREEDY:
                 # Should avoid division by zero later when apply_temperature.
                 self.temperature_cpu[req_index] = 0.0
@@ -878,6 +884,7 @@ class InputBatch:
             allowed_token_ids_mask=allowed_token_ids_mask,
             bad_words_token_ids=self.bad_words_token_ids,
             logitsprocs=self.logitsprocs,
+            skip_sampling=self.skip_sampling,
         )
 
     def get_pooling_params(self) -> list[PoolingParams]:

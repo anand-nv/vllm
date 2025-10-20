@@ -290,6 +290,10 @@ class SamplingParams(
     '\\emoji \\emoji \\emoji ...'). This feature can detect such behavior
     and terminate early, saving time and tokens."""
 
+    # skip sampling in case sampling is not needed (streaming encoders)
+    # or custom sampling happens inside model definition
+    skip_sampling: bool = False
+
     @staticmethod
     def from_optional(
         n: int | None = 1,

@@ -238,9 +238,6 @@ class FastConformerConvSpec(KVCacheSpec):
 
     @property
     def page_size_bytes(self) -> int:
-        print(f"debug: shape: {self.shape}, dtype: {self.dtype}")
-        print(f"prod(self.shape): {prod(self.shape)}")
-        print(f"get_dtype_size(self.dtype): {get_dtype_size(self.dtype)}")
         return prod(self.shape) * get_dtype_size(self.dtype)
 
     def max_memory_usage_bytes(self, vllm_config: VllmConfig) -> int:

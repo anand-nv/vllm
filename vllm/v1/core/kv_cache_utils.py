@@ -1099,6 +1099,7 @@ def get_kv_cache_config_from_groups(
         group_size = max(len(group.layer_names) for group in kv_cache_groups)
 
         page_size = get_uniform_page_size(kv_cache_specs)
+        print(f"page_size: {page_size}")
         assert group_size > 0, "group_size must be greater than 0"
         num_blocks = get_num_blocks(
             vllm_config, group_size, available_memory, page_size

@@ -38,10 +38,12 @@ from vllm.v1.kv_cache_interface import AttentionSpec
 
 logger = init_logger(__name__)
 
-create_block_mask_compiled = torch.compile(
-    create_block_mask, fullgraph=True, mode="reduce-overhead"
-)
-flex_attention_compiled = torch.compile(flex_attention, fullgraph=True)
+# create_block_mask_compiled = torch.compile(
+#     create_block_mask, fullgraph=True, mode="reduce-overhead"
+# )
+# flex_attention_compiled = torch.compile(flex_attention, fullgraph=True)
+create_block_mask_compiled = create_block_mask
+flex_attention_compiled = flex_attention
 
 
 def _offsets_to_doc_ids_tensor(offsets: torch.Tensor) -> torch.Tensor:
@@ -437,10 +439,12 @@ class FlexAttentionMetadata:
             mask_mod = self.get_bidirectional_mask_mod()
         # stage-2: add external mask_mod for special attention during
         # forwarding runtime to create the combined mask_mod.
-        if self.sliding_window is not None:
-            # Add sliding window mask for sliding window attention
-            sliding_window_mask_mod = self.get_sliding_window_mask_mod()
-            mask_mod = and_masks(mask_mod, sliding_window_mask_mod)
+
+        # TODO: remove after debugging...
+        # if self.sliding_window is not None:
+        #     # Add sliding window mask for sliding window attention
+        #     sliding_window_mask_mod = self.get_sliding_window_mask_mod()
+        #     mask_mod = and_masks(mask_mod, sliding_window_mask_mod)
         return mask_mod
 
     def get_transformed_score_mod(self) -> Optional[_score_mod_signature]:
@@ -774,20 +778,21 @@ class FlexAttentionImpl(AttentionImpl):
 
         num_actual_tokens = attn_metadata.num_actual_tokens
 
-        if attn_metadata.sliding_window != self.sliding_window:
-            attn_metadata.sliding_window = self.sliding_window
-            if attn_metadata.direct_build:
-                # TODO: Support skipping the computation of sliding window
-                # in direct block mask building code path.
-                logger.warning_once(
-                    "Using direct block mask building with sliding window, "
-                    "which is suboptimal now. Performance may be degraded."
-                )
-                # update mask mod in attention metadata
-                attn_metadata.mask_mod = attn_metadata.get_mask_mod()
-                attn_metadata.block_mask = attn_metadata._build_block_mask_direct()
-            else:
-                attn_metadata.block_mask = attn_metadata.build_block_mask()
+        # TODO: just debugging....
+        # if attn_metadata.sliding_window != self.sliding_window:
+        #     attn_metadata.sliding_window = self.sliding_window
+        #     if attn_metadata.direct_build:
+        #         # TODO: Support skipping the computation of sliding window
+        #         # in direct block mask building code path.
+        #         logger.warning_once(
+        #             "Using direct block mask building with sliding window, "
+        #             "which is suboptimal now. Performance may be degraded."
+        #         )
+        #         # update mask mod in attention metadata
+        #         attn_metadata.mask_mod = attn_metadata.get_mask_mod()
+        #         attn_metadata.block_mask = attn_metadata._build_block_mask_direct()
+        #     else:
+        #         attn_metadata.block_mask = attn_metadata.build_block_mask()
 
         if not attn_metadata.causal:
             assert self.attn_type == AttentionType.ENCODER_ONLY
@@ -836,9 +841,7 @@ class FlexAttentionImpl(AttentionImpl):
         # torch._dynamo.try_mark_dynamic(query, 2)
 
         assert attn_metadata.block_mask is not None
-        # block_m, block_n = attn_metadata.block_mask.BLOCK_SIZE
-        # TODO: figure out how to get around this
-        block_m, block_n = 4, 4
+        block_m, block_n = attn_metadata.block_mask.BLOCK_SIZE
 
         kernel_options = get_kernel_options(
             query, block_m, block_n, attn_metadata.direct_build

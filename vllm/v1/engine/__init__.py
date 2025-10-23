@@ -80,6 +80,7 @@ class EngineCoreRequest(
     data_parallel_rank: int | None
     is_streaming: bool | None = None
     prompt_embeds: torch.Tensor | None = None
+    custom_inputs: dict[str, torch.Tensor] | None = None
 
     # Index of the client, used to ensure outputs are sent back to the same
     # client for this request when scaling out the front-end.
@@ -109,6 +110,16 @@ class EngineCoreRequest(
             return self.sampling_params
         assert self.pooling_params is not None
         return self.pooling_params
+
+
+class EngineCoreAppendRequest(
+    msgspec.Struct,
+    array_like=True,  # type: ignore[call-arg]
+    omit_defaults=True,  # type: ignore[call-arg]
+    gc=False,
+):  # type: ignore[call-arg]
+    request_id: str
+    custom_inputs: dict[str, torch.Tensor]
 
 
 class EngineCoreEventType(enum.IntEnum):

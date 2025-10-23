@@ -38,7 +38,7 @@ from vllm.transformers_utils.config import maybe_register_config_serialize_by_va
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils.async_utils import cancel_task_threadsafe
 from vllm.utils.collection_utils import as_list
-from vllm.v1.engine import EngineCoreRequest, PauseMode
+from vllm.v1.engine import EngineCoreAppendRequest, EngineCoreRequest, PauseMode
 from vllm.v1.engine.core_client import EngineCoreClient
 from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
 from vllm.v1.engine.input_processor import InputProcessor
@@ -336,7 +336,6 @@ class AsyncLLM(EngineClient):
                 trace_headers,
                 priority,
                 data_parallel_rank,
-                is_streaming,
             )
 
         # Convert Input --> Request.
@@ -404,15 +403,24 @@ class AsyncLLM(EngineClient):
             )
         return queue
 
-    async def append_request(self, request_id: str, input_embeds: torch.Tensor):
+    async def append_request(
+        self, 
+        request_id: str, 
+        custom_inputs: Optional[dict[str, torch.Tensor]] = None,
+    ):
         """
-        Adds new input embedding into existing request.
-        Once embeddings are added, the request will be scheduled for execution.
+        Adds new custom inputs into existing request.
+        Once inputs are added, the request will be scheduled for execution.
+        
+        Args:
+            request_id: The request ID
+            custom_inputs: Optional dictionary mapping input names to tensors
         """
         if self.errored:
             raise EngineDeadError()
-
-        await self.engine_core.set_input_embeds_async(request_id, input_embeds)
+        if custom_inputs is not None:
+            request = EngineCoreAppendRequest(request_id=request_id, custom_inputs=custom_inputs)
+            await self.engine_core.set_custom_inputs_async(request)
 
     async def _add_request(
         self,

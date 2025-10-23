@@ -37,6 +37,7 @@ from vllm.v1.engine import (
     EEPNotificationType,
     EngineCoreOutputs,
     EngineCoreRequest,
+    EngineCoreAppendRequest,
     EngineCoreRequestType,
     PauseMode,
     ReconfigureDistributedRequest,
@@ -215,7 +216,7 @@ class EngineCoreClient(ABC):
     async def add_request_async(self, request: EngineCoreRequest) -> None:
         raise NotImplementedError
 
-    async def set_input_embeds_async(self, request_id: str, input_embeds: torch.Tensor) -> None:
+    async def set_custom_inputs_async(self, request: EngineCoreAppendRequest) -> None:
         raise NotImplementedError
 
     async def profile_async(
@@ -1088,8 +1089,8 @@ class AsyncMPClient(MPClient):
         await self._send_input(EngineCoreRequestType.ADD, request)
         self._ensure_output_queue_task()
 
-    async def set_input_embeds_async(self, request_id: str, input_embeds: torch.Tensor) -> None:
-        await self._send_input(EngineCoreRequestType.APPEND, (request_id, input_embeds))
+    async def set_custom_inputs_async(self, request: EngineCoreAppendRequest) -> None:
+        await self._send_input(EngineCoreRequestType.APPEND, request)
         self._ensure_output_queue_task()
 
     async def abort_requests_async(self, request_ids: list[str]) -> None:

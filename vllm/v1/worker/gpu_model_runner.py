@@ -691,6 +691,16 @@ class GPUModelRunner(
             ]
             self.is_mm_embed_idx = 0
 
+        # buffers for custom inputs
+        self.custom_inputs = {}
+        if self.model_config.custom_input_specs is not None:
+            for spec in self.model_config.custom_input_specs:
+                self.custom_inputs[spec.name] = self._make_buffer(
+                    spec.get_buffer_shape(self.max_num_tokens),
+                    dtype=spec.get_torch_dtype() or self.dtype,
+                    numpy=False,
+                )
+
         # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
         if self.uses_mrope:
             # NOTE: `mrope_positions` is implemented with one additional dummy
@@ -930,6 +940,11 @@ class GPUModelRunner(
     def _init_model_kwargs(self):
         model_kwargs = dict[str, Any]()
 
+        # set the custom inputs if buffers are available
+        if self.custom_inputs:
+            for input_name, buffer in self.custom_inputs.items():
+                model_kwargs[input_name] = buffer.gpu[:num_tokens]
+
         if not self.is_pooling_model:
             return model_kwargs
 
@@ -1115,8 +1130,7 @@ class GPUModelRunner(
                 req_id=req_id,
                 prompt_token_ids=new_req_data.prompt_token_ids,
                 prompt_embeds=new_req_data.prompt_embeds,
-                # for a new request, use prompt embeds
-                next_input_embeds=None,
+                custom_inputs=new_req_data.custom_inputs,
                 mm_features=new_req_data.mm_features,
                 sampling_params=sampling_params,
                 pooling_params=pooling_params,
@@ -1181,7 +1195,7 @@ class GPUModelRunner(
             resumed_from_preemption = req_id in req_data.resumed_req_ids
             num_output_tokens = req_data.num_output_tokens[i]
             req_index = self.input_batch.req_id_to_index.get(req_id)
-            req_state.next_input_embeds = req_data.new_input_embeds[i]
+            req_state.custom_inputs = req_data.new_custom_inputs[i]
 
             if req_state.prev_num_draft_len and self.use_async_scheduling:
                 # prev_num_draft_len is used in async scheduling mode with
@@ -1779,36 +1793,25 @@ class GPUModelRunner(
                     ].copy_(req_embeds[start_pos:actual_end])
 
                 output_idx += num_sched
+        
+        if self.input_batch.req_custom_inputs:
+            # copy custom inputs into GPU buffers
+            for input_name in self.custom_inputs.keys():
+                # if `input_name` is not set in the requests, skip it
+                in_requests = [input_name in self.input_batch.req_custom_inputs[req_idx] for req_idx in range(num_reqs)]
+                if not all(in_requests):
+                    raise RuntimeError(f"Custom input {input_name} should be set for all of the requests")
 
-        # same as with `req_prompt_embeds`, copy the explicitely
-        # provided input embeddings to `self.inputs_embeds`
-        # TODO: can this iteration be combined with the one for `req_prompt_embeds`?
-        if self.input_batch.req_next_embeds:
-            output_idx = 0
-            for req_idx in range(num_reqs):
-                num_sched = num_scheduled_tokens[req_idx]
-
-                # skip request if it doesnt have embeddings
-                if req_idx not in self.input_batch.req_next_embeds:
+                # iterate over requests and fill custom_inputs[input_name] buffer
+                output_idx = 0
+                for req_idx in range(num_reqs):
+                    num_sched = num_scheduled_tokens[req_idx]
+                    custom_input = self.input_batch.req_custom_inputs[req_idx][input_name]
+                    if custom_input.shape[0] != num_sched:
+                        raise RuntimeError(f"Expected {num_sched} tokens for custom input {input_name} for request {req_idx}, but got {custom_input.shape[0]}")
+                    self.custom_inputs[input_name].cpu[output_idx : output_idx + num_sched].copy_(custom_input)
                     output_idx += num_sched
-                    continue
-
-                # Skip if no tokens scheduled
-                if num_sched <= 0:
-                    output_idx += num_sched
-                    continue
-
-                next_embeds = self.input_batch.req_next_embeds[req_idx]
-                if next_embeds is None:
-                    output_idx += num_sched
-                    continue
-
-                if next_embeds.shape[0] != num_sched:
-                    raise RuntimeError(f"Expected {num_sched} embeddings for request {req_idx}, but got {next_embeds.shape[0]}")
-
-                self.inputs_embeds.cpu[output_idx : output_idx + num_sched].copy_(next_embeds)
-                self.is_token_ids.cpu[output_idx : output_idx + num_sched] = False
-                output_idx += num_sched
+                self.custom_inputs[input_name].copy_to_gpu(output_idx)
 
         self.input_batch.block_table.compute_slot_mapping(req_indices, positions_np)
         self.input_batch.block_table.commit_slot_mapping(total_num_scheduled_tokens)

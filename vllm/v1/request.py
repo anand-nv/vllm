@@ -66,6 +66,7 @@ class Request:
         client_index: int = 0,
         arrival_time: float | None = None,
         prompt_embeds: torch.Tensor | None = None,
+        custom_inputs: dict[str, torch.Tensor] | None = None,
         mm_features: list[MultiModalFeatureSpec] | None = None,
         lora_request: "LoRARequest | None" = None,
         cache_salt: str | None = None,
@@ -93,8 +94,6 @@ class Request:
         self.events: list[EngineCoreEvent] = []
         self.stop_reason: int | str | None = None
 
-        self.is_streaming = is_streaming
-
         # P/D: Connector-specific KV transfer parameters.
         self.kv_transfer_params: dict[str, Any] | None = None
 
@@ -120,10 +119,10 @@ class Request:
         # Cache per-block prompt-embed hashes to avoid rehashing the same
         # tensor slices when generating extra keys.
         self._prompt_embeds_per_block_hashes: dict[tuple[int, int], bytes] = {}
-        self.next_input_embeds: torch.Tensor | None = None
-        # for a running request, scheduler will wait for event to be set.
-        # for new request, prompt embeds are used
-        self._next_input_embeds_ready = False
+        # Custom inputs support
+        self.custom_inputs: dict[str, torch.Tensor] | None = custom_inputs
+        # for a running request, scheduler will wait for the flag to be set
+        self._custom_inputs_ready = custom_inputs is not None
         self.num_prompt_tokens = length_from_prompt_token_ids_or_embeds(
             prompt_token_ids, prompt_embeds
         )
@@ -195,6 +194,7 @@ class Request:
             client_index=request.client_index,
             prompt_token_ids=request.prompt_token_ids,
             prompt_embeds=request.prompt_embeds,
+            custom_inputs=request.custom_inputs,
             mm_features=request.mm_features,
             sampling_params=request.sampling_params,
             pooling_params=request.pooling_params,
@@ -300,18 +300,19 @@ class Request:
             return self.request_id < other.request_id
         return id(self) < id(other)
 
-    def set_next_input_embeds(self, input_embeds: torch.Tensor) -> None:
-        self.next_input_embeds = input_embeds
-        self._next_input_embeds_ready = True
+    def set_custom_inputs(self, custom_inputs: dict[str, torch.Tensor]) -> None:
+        """Set custom inputs for the request."""
+        self.custom_inputs = custom_inputs
+        self._custom_inputs_ready = True
 
-    def read_next_input_embeds(self) -> torch.Tensor | None:
-        # clear, so request does not get scheduled again, before
-        # another `set_next_input_embeds` is called
-        self._next_input_embeds_ready = False
-        return self.next_input_embeds
+    def read_custom_inputs(self) -> dict[str, torch.Tensor] | None:
+        """Read and clear custom inputs."""
+        self._custom_inputs_ready = False
+        return self.custom_inputs
 
-    def has_next_input_embeds(self) -> bool:
-        return self._next_input_embeds_ready
+    def has_custom_inputs(self) -> bool:
+        """Check if custom inputs are ready."""
+        return self._custom_inputs_ready
 
 
 class RequestStatus(enum.IntEnum):

@@ -263,8 +263,6 @@ class ModelConfig:
     Processed means the values after applying all processors, including
     temperature and top_k/top_p.
     """
-    return_hidden_states: bool = False
-    """Whether to return the last layer hidden states of the model."""
     disable_sliding_window: bool = False
     """Whether to disable sliding window. If True, we will disable the sliding
     window functionality of the model, capping to sliding window size. If the
@@ -698,6 +696,7 @@ class ModelConfig:
                 raise RuntimeError(
                     f"Error parsing custom input specifications from hf_config: {e}"
                 ) from e
+        self.custom_outputs = getattr(self.hf_config, "custom_outputs", None)
 
         if self.disable_sliding_window:
             # Set after get_and_verify_max_len to ensure that max_model_len

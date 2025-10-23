@@ -57,8 +57,8 @@ class EngineCoreRequest(
     lora_request: Optional[LoRARequest]
     cache_salt: Optional[str]
     data_parallel_rank: Optional[int]
-    is_streaming: Optional[bool]
     prompt_embeds: Optional[torch.Tensor] = None
+    custom_inputs: Optional[dict[str, torch.Tensor]] = None
 
     # Index of the client, used to ensure outputs are sent back to the same
     # client for this request when scaling out the front-end.
@@ -71,6 +71,16 @@ class EngineCoreRequest(
     priority: int = 0
 
     trace_headers: Optional[Mapping[str, str]] = None
+
+
+class EngineCoreAppendRequest(
+    msgspec.Struct,
+    array_like=True,  # type: ignore[call-arg]
+    omit_defaults=True,  # type: ignore[call-arg]
+    gc=False,
+):  # type: ignore[call-arg]
+    request_id: str
+    custom_inputs: dict[str, torch.Tensor]
 
 
 class EngineCoreEventType(enum.IntEnum):

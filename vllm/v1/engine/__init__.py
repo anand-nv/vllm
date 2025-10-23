@@ -120,7 +120,7 @@ class EngineCoreOutput(
     new_token_ids: list[int]
 
     new_logprobs: Optional[LogprobsLists] = None
-    new_hidden_states: Optional[torch.Tensor] = None
+    new_custom_outputs: Optional[dict[str, torch.Tensor]] = None
     new_prompt_logprobs_tensors: Optional[LogprobsTensors] = None
 
     pooling_output: Optional[torch.Tensor] = None

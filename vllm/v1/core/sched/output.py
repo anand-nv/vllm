@@ -33,6 +33,7 @@ class NewRequestData:
     num_computed_tokens: int
     lora_request: LoRARequest | None
     prompt_embeds: torch.Tensor | None = None
+    custom_inputs: dict[str, torch.Tensor] | None = None
 
     @classmethod
     def from_request(
@@ -50,10 +51,14 @@ class NewRequestData:
             num_computed_tokens=request.num_computed_tokens,
             lora_request=request.lora_request,
             prompt_embeds=request.prompt_embeds,
+            custom_inputs=request.read_custom_inputs(),
         )
 
     def __repr__(self) -> str:
         prompt_embeds_shape = self.prompt_embeds.shape if self.prompt_embeds else None
+        custom_inputs_str = None
+        if self.custom_inputs is not None:
+            custom_inputs_str = ",".join([f"{k}:{v.shape}" for k, v in self.custom_inputs.items()])
         return (
             f"NewRequestData("
             f"req_id={self.req_id},"
@@ -63,7 +68,8 @@ class NewRequestData:
             f"block_ids={self.block_ids},"
             f"num_computed_tokens={self.num_computed_tokens},"
             f"lora_request={self.lora_request},"
-            f"prompt_embeds_shape={prompt_embeds_shape}"
+            f"prompt_embeds_shape={prompt_embeds_shape},"
+            f"custom_inputs={custom_inputs_str}"
             ")"
         )
 
@@ -101,7 +107,7 @@ class CachedRequestData:
     new_block_ids: list[tuple[list[int], ...] | None]
     num_computed_tokens: list[int]
     num_output_tokens: list[int]
-    new_input_embeds: list[torch.Tensor]
+    new_custom_inputs: list[dict[str, torch.Tensor]]
 
     @property
     def num_reqs(self) -> int:
@@ -116,6 +122,7 @@ class CachedRequestData:
             new_block_ids=[],
             num_computed_tokens=[],
             num_output_tokens=[],
+            new_custom_inputs=[],
         )
 
 

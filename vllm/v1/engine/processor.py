@@ -346,7 +346,6 @@ class Processor:
         trace_headers: Optional[Mapping[str, str]] = None,
         priority: int = 0,
         data_parallel_rank: Optional[int] = None,
-        is_streaming: Optional[bool] = None,
     ) -> EngineCoreRequest:
         self._validate_lora(lora_request)
         self._validate_params(params)
@@ -386,6 +385,9 @@ class Processor:
             else:
                 mm_uuids = None
 
+        # TODO: pop custom inputs here, add validation later
+        custom_inputs = prompt.pop("custom_inputs", None)
+
         # Process inputs, which includes:
         # 1. Tokenize text prompt, with LoRA request if one exists.
         # 2. For multimodal models with a merged preprocessor, preprocess
@@ -395,6 +397,7 @@ class Processor:
             tokenization_kwargs=tokenization_kwargs,
             mm_uuids=mm_uuids,
         )
+
         from vllm.platforms import current_platform
 
         current_platform.validate_request(
@@ -480,7 +483,7 @@ class Processor:
             priority=priority,
             data_parallel_rank=data_parallel_rank,
             trace_headers=trace_headers,
-            is_streaming=is_streaming,
+            custom_inputs=custom_inputs,
         )
 
     def _validate_model_inputs(

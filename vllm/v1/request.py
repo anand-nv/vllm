@@ -39,6 +39,7 @@ class Request:
         client_index: int = 0,
         arrival_time: Optional[float] = None,
         prompt_embeds: Optional[torch.Tensor] = None,
+        custom_inputs: Optional[dict[str, torch.Tensor]] = None,
         mm_features: Optional[list[MultiModalFeatureSpec]] = None,
         lora_request: Optional["LoRARequest"] = None,
         structured_output_request: Optional["StructuredOutputRequest"] = None,
@@ -46,7 +47,6 @@ class Request:
         priority: int = 0,
         trace_headers: Optional[Mapping[str, str]] = None,
         block_hasher: Optional[Callable[["Request"], list["BlockHash"]]] = None,
-        is_streaming: Optional[bool] = None,
     ) -> None:
         self.request_id = request_id
         self.client_index = client_index
@@ -63,8 +63,6 @@ class Request:
         self.use_structured_output = False
         self.events: list[EngineCoreEvent] = []
         self.stop_reason: Union[int, str, None] = None
-
-        self.is_streaming = is_streaming
 
         # P/D: Connector-specific KV transfer parameters.
         self.kv_transfer_params: Optional[dict[str, Any]] = None
@@ -89,10 +87,11 @@ class Request:
 
         self.prompt_token_ids = prompt_token_ids
         self.prompt_embeds = prompt_embeds
-        self.next_input_embeds: Optional[torch.Tensor] = None
-        # for a running request, scheduler will wait for event to be set.
-        # for new request, prompt embeds are used
-        self._next_input_embeds_ready = False
+        
+        # Custom inputs support
+        self.custom_inputs: Optional[dict[str, torch.Tensor]] = custom_inputs
+        # for a running request, scheduler will wait for the flag to be set
+        self._custom_inputs_ready = custom_inputs is not None
         self.num_prompt_tokens = length_from_prompt_token_ids_or_embeds(
             prompt_token_ids, prompt_embeds
         )
@@ -147,6 +146,7 @@ class Request:
             client_index=request.client_index,
             prompt_token_ids=request.prompt_token_ids,
             prompt_embeds=request.prompt_embeds,
+            custom_inputs=request.custom_inputs,
             mm_features=request.mm_features,
             sampling_params=request.sampling_params,
             pooling_params=request.pooling_params,
@@ -162,7 +162,6 @@ class Request:
             priority=request.priority,
             trace_headers=request.trace_headers,
             block_hasher=block_hasher,
-            is_streaming=request.is_streaming,
         )
 
     def append_output_token_ids(
@@ -219,18 +218,19 @@ class Request:
         events, self.events = self.events, []
         return events
 
-    def set_next_input_embeds(self, input_embeds: torch.Tensor) -> None:
-        self.next_input_embeds = input_embeds
-        self._next_input_embeds_ready = True
+    def set_custom_inputs(self, custom_inputs: dict[str, torch.Tensor]) -> None:
+        """Set custom inputs for the request."""
+        self.custom_inputs = custom_inputs
+        self._custom_inputs_ready = True
 
-    def read_next_input_embeds(self) -> Optional[torch.Tensor]:
-        # clear, so request does not get scheduled again, before
-        # another `set_next_input_embeds` is called
-        self._next_input_embeds_ready = False
-        return self.next_input_embeds
+    def read_custom_inputs(self) -> Optional[dict[str, torch.Tensor]]:
+        """Read and clear custom inputs."""
+        self._custom_inputs_ready = False
+        return self.custom_inputs
 
-    def has_next_input_embeds(self) -> bool:
-        return self._next_input_embeds_ready
+    def has_custom_inputs(self) -> bool:
+        """Check if custom inputs are ready."""
+        return self._custom_inputs_ready
 
 class RequestStatus(enum.IntEnum):
     """Status of a request."""

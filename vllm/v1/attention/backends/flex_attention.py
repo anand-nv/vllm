@@ -545,7 +545,6 @@ class FlexAttentionMetadata:
         return BlockMask.from_kv_blocks(**block_mask_kwargs)
 
     def build_block_mask(self) -> BlockMask:
-        print(f"[vllm_debug] this function is getting called which is kinda expensive")
         mask_mod = self.get_mask_mod()
         kv_len = self.total_cache_tokens if self.causal else self.num_actual_tokens
         return create_block_mask_compiled(
@@ -568,13 +567,13 @@ class FlexAttentionMetadata:
         self.doc_ids = _offsets_to_doc_ids_tensor(self.query_start_loc)
         self.num_blocks = self.total_cache_tokens // self.block_size
 
-        self.mask_mod = self.get_mask_mod()
-        self.transformed_score_mod = self.get_transformed_score_mod()
+        # self.mask_mod = self.get_mask_mod()
+        # self.transformed_score_mod = self.get_transformed_score_mod()
 
-        if self.direct_build and self.causal:
-            self.block_mask = self._build_block_mask_direct()
-        else:
-            self.block_mask = self.build_block_mask()
+        # if self.direct_build and self.causal:
+        #     self.block_mask = self._build_block_mask_direct()
+        # else:
+        #     self.block_mask = self.build_block_mask()
 
 
 class FlexAttentionMetadataBuilder(AttentionMetadataBuilder[FlexAttentionMetadata]):
@@ -848,6 +847,8 @@ class FlexAttentionImpl(AttentionImpl):
         kernel_options = get_kernel_options(
             query, block_m, block_n, attn_metadata.direct_build
         )
+        print(f"[vllm_debug] id(transformed_score_mod): {id(attn_metadata.transformed_score_mod)}")
+        print(f"[vllm_debug] id(block_mask): {id(attn_metadata.block_mask)}")
         out = flex_attention_compiled(
             query,
             key_tensor,

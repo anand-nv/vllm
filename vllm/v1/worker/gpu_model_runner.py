@@ -2212,7 +2212,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             input_ids = None
             inputs_embeds = self.inputs_embeds.gpu[:num_input_tokens]
             model_kwargs = {
-                **self._init_model_kwargs(num_scheduled_tokens),
+                # TODO: which should be used for custom inputs,
+                # num_input_tokens or num_scheduled_tokens?
+                **self._init_model_kwargs(num_input_tokens),
                 **self._extract_mm_kwargs(scheduler_output),
             }
         elif self.enable_prompt_embeds and get_pp_group().is_first_rank:
@@ -3510,14 +3512,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             if self.supports_mm_inputs and not self.model_config.is_encoder_decoder:
                 input_ids = None
                 inputs_embeds = self.inputs_embeds.gpu[:num_tokens]
-                model_kwargs = {
-                    **model_kwargs,
-                    **self._dummy_mm_kwargs(num_reqs),
-                }
+                model_kwargs.update(self._dummy_mm_kwargs(num_reqs))
             elif self.enable_prompt_embeds:
                 input_ids = None
                 inputs_embeds = self.inputs_embeds.gpu[:num_tokens]
-                model_kwargs = self._init_model_kwargs(num_tokens)
             else:
                 input_ids = self.input_ids.gpu[:num_tokens]
                 inputs_embeds = None

@@ -36,6 +36,7 @@ class UbatchMetadata:
     input_ids: torch.Tensor
     positions: torch.Tensor
     inputs_embeds: torch.Tensor | None
+    custom_inputs: dict[str, torch.Tensor] | None
     intermediate_tensors: IntermediateTensors | None
     num_tokens: int
 
@@ -220,6 +221,7 @@ class UBatchWrapper:
                     positions=ubatch_metadata.positions,
                     intermediate_tensors=ubatch_metadata.intermediate_tensors,
                     inputs_embeds=ubatch_metadata.inputs_embeds,
+                    **ubatch_metadata.custom_inputs,
                 )
 
             results.append((ubatch_metadata.context.id, model_output))
@@ -285,6 +287,7 @@ class UBatchWrapper:
                     positions=ubatch_metadata.positions,
                     intermediate_tensors=ubatch_metadata.intermediate_tensors,
                     inputs_embeds=ubatch_metadata.inputs_embeds,
+                    **ubatch_metadata.custom_inputs,
                 )
             results.append((ubatch_metadata.context.id, model_output))
 
@@ -323,6 +326,7 @@ class UBatchWrapper:
         positions,
         inputs_embeds,
         intermediate_tensors,
+        custom_inputs,
         compute_stream,
         dp_metadata,
         batch_descriptor,
@@ -360,12 +364,14 @@ class UBatchWrapper:
                 sliced_positions,
                 sliced_inputs_embeds,
                 sliced_intermediate_tensors,
+                sliced_custom_inputs,
             ) = self._slice_model_inputs(
                 ubatch_slice.token_slice,
                 input_ids,
                 positions,
                 inputs_embeds,
                 intermediate_tensors,
+                custom_inputs,
             )
             ubatch_metadata.append(
                 UbatchMetadata(
@@ -374,6 +380,7 @@ class UBatchWrapper:
                     positions=sliced_positions,
                     inputs_embeds=sliced_inputs_embeds,
                     intermediate_tensors=sliced_intermediate_tensors,
+                    custom_inputs=sliced_custom_inputs,
                     num_tokens=ubatch_slice.token_slice.stop
                     - ubatch_slice.token_slice.start,
                 )
@@ -388,6 +395,7 @@ class UBatchWrapper:
         positions,
         inputs_embeds,
         intermediate_tensors,
+        custom_inputs,
     ):
         sliced_input_ids = input_ids[tokens_slice] if input_ids is not None else None
         # if we are using mrope. Mrope adds an additional dimension to the
@@ -404,12 +412,14 @@ class UBatchWrapper:
             if intermediate_tensors is not None
             else None
         )
+        sliced_custom_inputs = {name: custom_inputs[name][tokens_slice] for name in custom_inputs.keys()}
 
         return (
             sliced_input_ids,
             sliced_positions,
             sliced_inputs_embeds,
             sliced_intermediate_tensors,
+            sliced_custom_inputs,
         )
 
     def __call__(self, *args, **kwargs):
@@ -444,6 +454,9 @@ class UBatchWrapper:
         positions = kwargs["positions"]
         intermediate_tensors = kwargs["intermediate_tensors"]
         inputs_embeds = kwargs["inputs_embeds"]
+        custom_inputs = {}
+        if self.vllm_config.model_config.custom_input_specs:
+            custom_inputs = {spec.name: kwargs[spec.name] for spec in self.vllm_config.model_config.custom_input_specs}
         compute_stream = torch.cuda.current_stream()
 
         dp_metadata = forward_context.dp_metadata
@@ -476,6 +489,7 @@ class UBatchWrapper:
                 positions=positions,
                 intermediate_tensors=intermediate_tensors,
                 inputs_embeds=inputs_embeds,
+                custom_inputs=custom_inputs,
                 compute_stream=compute_stream,
                 dp_metadata=ubatch_dp_metadata,
                 batch_descriptor=batch_descriptor,
@@ -502,6 +516,7 @@ class UBatchWrapper:
                 positions=positions,
                 intermediate_tensors=intermediate_tensors,
                 inputs_embeds=inputs_embeds,
+                custom_inputs=custom_inputs,
                 compute_stream=compute_stream,
                 dp_metadata=ubatch_dp_metadata,
                 batch_descriptor=batch_descriptor,

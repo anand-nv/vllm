@@ -50,6 +50,7 @@ class NewRequestData:
         cls,
         request: Request,
         block_ids: tuple[list[int], ...],
+        scheduled_tokens_num: int,
         prefill_token_ids: list[int] | None = None,
     ) -> "NewRequestData":
         return cls(
@@ -62,7 +63,7 @@ class NewRequestData:
             num_computed_tokens=request.num_computed_tokens,
             lora_request=request.lora_request,
             prompt_embeds=request.prompt_embeds,
-            custom_inputs=request.read_custom_inputs(),
+            custom_inputs=request.read_custom_inputs(scheduled_tokens_num),
             prefill_token_ids=prefill_token_ids,
         )
 

@@ -707,7 +707,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             new_block_ids = req_data.new_block_ids[i]
             resumed_from_preemption = req_data.resumed_from_preemption[i]
             num_output_tokens = req_data.num_output_tokens[i]
-            req_state.custom_inputs = req_data.new_custom_inputs[i]
+            if req_data.new_custom_inputs:
+                req_state.custom_inputs = req_data.new_custom_inputs[i]
 
             # Update the cached states.
 

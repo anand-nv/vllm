@@ -386,7 +386,9 @@ class Processor:
                 mm_uuids = None
 
         # TODO: pop custom inputs here, add validation later
-        custom_inputs = prompt.pop("custom_inputs", None)
+        custom_inputs = None
+        if isinstance(prompt, dict):
+            custom_inputs = prompt.pop("custom_inputs", None)
 
         # Process inputs, which includes:
         # 1. Tokenize text prompt, with LoRA request if one exists.

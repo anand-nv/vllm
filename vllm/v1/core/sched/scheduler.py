@@ -619,7 +619,8 @@ class Scheduler(SchedulerInterface):
             NewRequestData.from_request(
                 req,
                 req_to_new_blocks[req.request_id].get_block_ids(),
-                num_scheduled_tokens[req.request_id]
+                num_scheduled_tokens[req.request_id],
+                self.await_inputs,
             )
             for req in scheduled_new_reqs
         ]
@@ -759,10 +760,11 @@ class Scheduler(SchedulerInterface):
             # TODO: in `schedule` add a check that custom inputs are set
             # for resumed_reqs
             # Read only the scheduled portion of custom_inputs (for chunked prefill)
-            scheduled_tokens = num_scheduled_tokens[req_id]
-            new_custom_inputs.append(
-                req.read_custom_inputs(scheduled_tokens)
-            )
+            if self.await_inputs:
+                scheduled_tokens = num_scheduled_tokens[req_id]
+                new_custom_inputs.append(
+                    req.read_custom_inputs(scheduled_tokens)
+                )
 
         # Because resumed_reqs is usually empty, it is more efficient to do
         # in-place appending so that we don't need to allocate a new list.

@@ -41,14 +41,11 @@ from vllm.v1.kv_cache_interface import AttentionSpec
 logger = init_logger(__name__)
 
 torch._dynamo.config.recompile_limit = 16
-# create_block_mask_compiled = torch.compile(
-#     create_block_mask, fullgraph=True, mode="reduce-overhead"
-# )
-# flex_attention_compiled = torch.compile(flex_attention, fullgraph=True)
+create_block_mask_compiled = torch.compile(
+    create_block_mask, fullgraph=True, mode="reduce-overhead"
+)
+flex_attention_compiled = torch.compile(flex_attention, fullgraph=True)
 
-# TODO: figure out why torch.compile breaks on fastconformer
-create_block_mask_compiled = create_block_mask
-flex_attention_compiled = flex_attention
 
 def _offsets_to_doc_ids_tensor(offsets: torch.Tensor) -> torch.Tensor:
     device = offsets.device
@@ -344,6 +341,7 @@ class FlexAttentionMetadata:
     physical_to_logical: torch.Tensor
     decode_offset: torch.Tensor
     num_blocks_per_seq: torch.Tensor
+    doc_ids: torch.Tensor
 
     # For logging.
     num_input_tokens: int = 0  # Number of tokens including padding.
@@ -353,7 +351,6 @@ class FlexAttentionMetadata:
     block_mask: BlockMask | None = None
     score_mod: _score_mod_signature | None = None
     logical_mask_mod: _mask_mod_signature = causal_mask_mod
-    doc_ids: torch.Tensor | None = None
     direct_build: bool = True
     q_block_size: int = 16
     kv_block_size: int = 16
@@ -537,12 +534,10 @@ class FlexAttentionMetadata:
             mask_mod = self.get_bidirectional_mask_mod()
         # stage-2: add external mask_mod for special attention during
         # forwarding runtime to create the combined mask_mod.
-
-        # TODO: remove after debugging...
-        # if self.sliding_window is not None:
-        #     # Add sliding window mask for sliding window attention
-        #     sliding_window_mask_mod = self.get_sliding_window_mask_mod()
-        #     mask_mod = and_masks(mask_mod, sliding_window_mask_mod)
+        if self.sliding_window is not None:
+            # Add sliding window mask for sliding window attention
+            sliding_window_mask_mod = self.get_sliding_window_mask_mod()
+            mask_mod = and_masks(mask_mod, sliding_window_mask_mod)
         if self.mm_prefix_range:
             # Add prefix LM mask for vision-language prefix LM attention
             prefix_lm_mask_mod = self.get_prefix_lm_mask_mod()
@@ -699,7 +694,7 @@ class FlexAttentionMetadata:
         assert self.prefix_kv_lens is None, "Not implemented yet."
         assert self.suffix_kv_lens is None, "Not implemented yet."
         # Create a lookup mapping from query indices -> request number
-        self.doc_ids = _offsets_to_doc_ids_tensor(self.query_start_loc)
+        # self.doc_ids = _offsets_to_doc_ids_tensor(self.query_start_loc)
         self.num_blocks = self.total_cache_tokens // self.block_size
 
         # self.mask_mod = self.get_mask_mod()
@@ -766,15 +761,16 @@ class FlexAttentionMetadataBuilder(AttentionMetadataBuilder[FlexAttentionMetadat
         block_size = self.kv_cache_spec.block_size
         max_possible_seq_len = self.model_config.max_model_len
         num_gpu_blocks = self.cache_config.num_gpu_blocks
+        num_gpu_blocks = 1
 
-        assert num_gpu_blocks is not None, (
-            "FlexAttention requires num_gpu_blocks to be set"
-        )
+        # assert num_gpu_blocks is not None, (
+        #     "FlexAttention requires num_gpu_blocks to be set"
+        # )
         total_cache_tokens = num_gpu_blocks * block_size
 
-        inverse_block_table = physical_to_logical_mapping(
-            block_table_tensor, seq_lens, block_size, num_gpu_blocks
-        )
+        # inverse_block_table = physical_to_logical_mapping(
+        #     block_table_tensor, seq_lens, block_size, num_gpu_blocks
+        # )
 
         offset_tensor = common_attn_metadata.compute_num_computed_tokens()
 
@@ -783,6 +779,7 @@ class FlexAttentionMetadataBuilder(AttentionMetadataBuilder[FlexAttentionMetadat
             num_actual_tokens=num_actual_tokens,
             max_query_len=max_query_len,
             query_start_loc=query_start_loc,
+            doc_ids=common_attn_metadata.doc_ids,
             max_seq_len=max_seq_len,
             seq_lens=seq_lens,
             block_table=block_table_tensor,
@@ -795,7 +792,8 @@ class FlexAttentionMetadataBuilder(AttentionMetadataBuilder[FlexAttentionMetadat
             block_size=block_size,
             max_possible_sequence_length=max_possible_seq_len,
             num_reqs=num_reqs,
-            physical_to_logical=inverse_block_table,
+            # physical_to_logical=inverse_block_table,
+            physical_to_logical=None,
             total_cache_tokens=total_cache_tokens,
             decode_offset=offset_tensor,
             num_blocks_per_seq=num_blocks_per_seq,
@@ -944,13 +942,18 @@ class FlexAttentionImpl(AttentionImpl):
         num_actual_tokens = attn_metadata.num_actual_tokens
 
         needs_rebuild_block_mask = False
-        # TODO: just debugging....
-        # if attn_metadata.sliding_window != self.sliding_window:
-        #     attn_metadata.sliding_window = self.sliding_window
-        #     if attn_metadata.direct_build:
-        #         # update mask mod in attention metadata
-        #         attn_metadata.mask_mod = attn_metadata.get_mask_mod()
-        #     needs_rebuild_block_mask = True
+        if attn_metadata.sliding_window != self.sliding_window:
+            attn_metadata.sliding_window = self.sliding_window
+            if attn_metadata.direct_build:
+                # TODO: Support skipping the computation of sliding window
+                # in direct block mask building code path.
+                logger.warning_once(
+                    "Using direct block mask building with sliding window, "
+                    "which is suboptimal now. Performance may be degraded."
+                )
+                # update mask mod in attention metadata
+                attn_metadata.mask_mod = attn_metadata.get_mask_mod()
+            needs_rebuild_block_mask = True
 
         if self.mm_prefix_range != getattr(attn_metadata, "mm_prefix_range", None):
             self.mm_prefix_range = attn_metadata.mm_prefix_range
@@ -1023,8 +1026,6 @@ class FlexAttentionImpl(AttentionImpl):
         kernel_options = get_kernel_options(
             query, block_m, block_n, attn_metadata.direct_build
         )
-        print(f"[vllm_debug] id(transformed_score_mod): {id(attn_metadata.transformed_score_mod)}")
-        print(f"[vllm_debug] id(block_mask): {id(attn_metadata.block_mask)}")
         out = flex_attention_compiled(
             query,
             key_tensor,

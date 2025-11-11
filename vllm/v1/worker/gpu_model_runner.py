@@ -393,6 +393,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self.query_start_loc = self._make_buffer(
             self.max_num_reqs + 1, dtype=torch.int32
         )
+        self.doc_ids = self._make_buffer(self.max_num_tokens, dtype=torch.int32)
+        self.decode_offset = self._make_buffer(self.max_num_reqs, dtype=torch.int32)
         self.seq_lens = self._make_buffer(self.max_num_reqs, dtype=torch.int32)
         # Because inputs_embeds may be bfloat16 and we don't need a numpy
         # version of this tensor, avoid a RuntimeError by not creating a
@@ -1195,6 +1197,21 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self.query_start_loc.copy_to_gpu()
         query_start_loc = self.query_start_loc.gpu[: num_reqs + 1]
 
+        # TODO: this probably isn't optimal
+        doc_ids_np = np.empty(total_num_scheduled_tokens, dtype=np.int32)
+        for doc_idx in range(num_reqs):
+            start = self.query_start_loc.np[doc_idx]
+            end = self.query_start_loc.np[doc_idx + 1]
+            if end > start:
+                doc_ids_np[start:end] = doc_idx
+        self.doc_ids.np[:total_num_scheduled_tokens] = doc_ids_np
+        self.doc_ids.copy_to_gpu()
+        doc_ids = self.doc_ids.gpu[:total_num_scheduled_tokens]
+
+        self.decode_offset.np[:num_reqs] = self.input_batch.num_computed_tokens_cpu[:num_reqs]
+        self.decode_offset.copy_to_gpu()
+        decode_offset = self.decode_offset.gpu[:num_reqs]
+
         num_tokens_unpadded = scheduler_output.total_num_scheduled_tokens
         num_tokens_padded = num_tokens_unpadded + self.get_local_padding(
             num_tokens_unpadded
@@ -1351,9 +1368,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             common_attn_metadata = CommonAttentionMetadata(
                 query_start_loc=query_start_loc,
                 query_start_loc_cpu=query_start_loc_cpu,
+                doc_ids=doc_ids,
                 seq_lens=seq_lens,
                 seq_lens_cpu=seq_lens_cpu,
                 num_computed_tokens_cpu=num_computed_tokens_cpu,
+                decode_offset=decode_offset,
                 num_reqs=num_reqs,
                 num_actual_tokens=total_num_scheduled_tokens,
                 max_query_len=max_num_scheduled_tokens,
@@ -3406,6 +3425,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 common_attn_metadata = CommonAttentionMetadata(
                     query_start_loc=self.query_start_loc.gpu[: num_reqs + 1],
                     query_start_loc_cpu=self.query_start_loc.cpu[: num_reqs + 1],
+                    doc_ids=self.doc_ids.gpu[:num_tokens],
+                    decode_offset=self.decode_offset.gpu[:num_reqs],
                     seq_lens=self.seq_lens.gpu[:num_reqs],
                     seq_lens_cpu=self.seq_lens.cpu[:num_reqs],
                     num_computed_tokens_cpu=self.input_batch.num_computed_tokens_cpu_tensor[
@@ -3559,13 +3580,17 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             self.eplb_step(is_dummy=True, is_profile=is_profile)
 
         logit_indices = np.cumsum(num_scheduled_tokens) - 1
-        return hidden_states, hidden_states[logit_indices]
+        # TODO: figure out what's going on here
+        # return hidden_states, hidden_states[logit_indices]
+        return hidden_states, hidden_states
 
     @torch.inference_mode()
     def _dummy_sampler_run(
         self,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
+        # TODO: figure out what's going on here
+        return None
         # The dummy hidden states may contain special values,
         # like `inf` or `nan`.
         # To avoid breaking the sampler, we use a random tensor here instead.
@@ -3783,7 +3808,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             if self.is_pooling_model:
                 output = self._dummy_pooler_run(hidden_states)
             else:
-                output = self._dummy_sampler_run(last_hidden_states)
+                # output = self._dummy_sampler_run(last_hidden_states)
+                output = None
         else:
             output = None
         self._sync_device()

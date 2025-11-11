@@ -64,6 +64,9 @@ class CommonAttentionMetadata:
     query_start_loc_cpu: torch.Tensor
     """(batch_size + 1,), the start location of each request in query Tensor"""
 
+    doc_ids: torch.Tensor
+    decode_offset: torch.Tensor
+
     seq_lens: torch.Tensor
     seq_lens_cpu: torch.Tensor
     """(batch_size,), the length of each request including both computed tokens
@@ -243,7 +246,8 @@ class AttentionCGSupport(enum.Enum):
 
 class AttentionMetadataBuilder(abc.ABC, Generic[M]):
     # Does this backend/builder support CUDA Graphs for attention (default: no).
-    cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.NEVER
+    # TODO: hack
+    cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.ALWAYS
     # Does this backend/builder reorder the batch?
     # If not, set this to None. Otherwise set it to the query
     # length that will be pulled into the front of the batch.
@@ -948,13 +952,17 @@ def create_fast_prefill_custom_backend(
     return attn_backend
 
 
-def compute_causal_conv1d_metadata(query_start_loc_p: torch.Tensor):
+def compute_causal_conv1d_metadata(query_start_loc_p: torch.Tensor, query_start_loc_cpu: bool = False):
     # Needed for causal_conv1d
-    seqlens = query_start_loc_p.diff().to("cpu")
+    if query_start_loc_cpu:
+        seqlens = query_start_loc_p.diff()
+    else:
+        seqlens = query_start_loc_p.diff().to("cpu")
     nums_dict = {}  # type: ignore
     batch_ptr = None
     token_chunk_offset_ptr = None
-    device = query_start_loc_p.device
+    # device = query_start_loc_p.device
+    device = "cuda"
     for BLOCK_M in [8]:  # cover all BLOCK_M values
         nums = -(-seqlens // BLOCK_M)
         nums_dict[BLOCK_M] = {}

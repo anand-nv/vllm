@@ -48,7 +48,7 @@ from vllm.model_executor.layers.mamba.abstract import MambaBase
 from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding
 from vllm.model_executor.model_loader import TensorizerLoader, get_model_loader
 from vllm.model_executor.models.deepseek_v2 import DeepseekV32IndexerCache
-from vllm.model_executor.models.fastconformer import FastConformerConvCache
+from vllm.model_executor.models.fastconformer import ConformerConvModule
 from vllm.model_executor.models.interfaces import (
     SupportsMultiModal,
     is_mixture_of_experts,
@@ -4631,7 +4631,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             kv_cache_spec[layer_name] = ds_indexer_module.get_kv_cache_spec()
 
         fastconformer_conv_layers = get_layers_from_vllm_config(
-            self.vllm_config, FastConformerConvCache
+            self.vllm_config, ConformerConvModule
         )
         for layer_name, fastconformer_conv_module in fastconformer_conv_layers.items():
             kv_cache_spec[layer_name] = fastconformer_conv_module.get_kv_cache_spec()

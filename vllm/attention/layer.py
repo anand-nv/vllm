@@ -237,7 +237,6 @@ class Attention(nn.Module, AttentionLayerBase):
             self.attn_backend = attn_backend
 
         impl_cls = self.attn_backend.get_impl_cls()
-        print(f"[vllm attention layer] impl_cls: {impl_cls}")
         self.impl = impl_cls(
             num_heads,
             head_size,
@@ -369,18 +368,13 @@ class Attention(nn.Module, AttentionLayerBase):
                 if isinstance(attn_metadata, dict):
                     attn_metadata = attn_metadata[self.layer_name]
                 self_kv_cache = self.kv_cache[forward_context.virtual_engine]
-                print(f"[vllm attention layer] calling self.impl.forward")
                 self.impl.forward(
                     self, query, key, value, self_kv_cache, attn_metadata, output=output
                 )
             else:
-                # print(f"[vllm attention layer] calling unified_attention_with_output")
                 torch.ops.vllm.unified_attention_with_output(
                     query, key, value, output, self.layer_name
                 )
-                # unified_attention_with_output(
-                #     query, key, value, output, self.layer_name
-                # )
             return output.view(-1, hidden_size)
         else:
             if self.use_direct_call:

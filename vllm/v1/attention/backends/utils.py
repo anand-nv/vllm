@@ -952,16 +952,12 @@ def create_fast_prefill_custom_backend(
     return attn_backend
 
 
-def compute_causal_conv1d_metadata(query_start_loc_p: torch.Tensor, query_start_loc_cpu: bool = False):
+def compute_causal_conv1d_metadata(query_start_loc_p: torch.Tensor):
     # Needed for causal_conv1d
-    if query_start_loc_cpu:
-        seqlens = query_start_loc_p.diff()
-    else:
-        seqlens = query_start_loc_p.diff().to("cpu")
+    seqlens = query_start_loc_p.diff()
     nums_dict = {}  # type: ignore
     batch_ptr = None
     token_chunk_offset_ptr = None
-    # device = query_start_loc_p.device
     device = "cuda"
     for BLOCK_M in [8]:  # cover all BLOCK_M values
         nums = -(-seqlens // BLOCK_M)

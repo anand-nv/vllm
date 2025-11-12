@@ -2305,7 +2305,15 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
     ) -> SamplerOutput:
         # Sample the next token and get logprobs if needed.
         sampling_metadata = self.input_batch.sampling_metadata
-        if spec_decode_metadata is None:
+        # TODO: merge in slava's skip_sampling metadata code
+        skip_sampling = True
+        if skip_sampling:
+            num_reqs = self.input_batch.num_reqs
+            sampler_output = SamplerOutput(
+                sampled_token_ids=torch.zeros((num_reqs, 1), dtype=torch.int32, device="cpu"),
+                logprobs_tensors=None,
+            )
+        elif spec_decode_metadata is None:
             sampler_output = self.sampler(
                 logits=logits,
                 sampling_metadata=sampling_metadata,
@@ -2654,9 +2662,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     )
                     output.kv_connector_output = kv_connector_output
                     return output
-
-                sample_hidden_states = hidden_states[logits_indices]
-                logits = self.model.compute_logits(sample_hidden_states)
+                # TODO: merge in slava's skip_sampling metadata code
+                skip_sampling = True
+                if skip_sampling:
+                    logits = None
+                else:
+                    sample_hidden_states = hidden_states[logits_indices]
+                    logits = self.model.compute_logits(sample_hidden_states)
             else:
                 # Rare case.
                 assert not self.is_pooling_model
@@ -2674,8 +2686,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     )
                     logits = None
                 else:
-                    sample_hidden_states = hidden_states[logits_indices]
-                    logits = self.model.compute_logits(sample_hidden_states)
+                    # TODO: merge in slava's skip_sampling metadata code
+                    skip_sampling = True
+                    if skip_sampling:
+                        logits = None
+                    else:
+                        sample_hidden_states = hidden_states[logits_indices]
+                        logits = self.model.compute_logits(sample_hidden_states)
 
                 model_output_broadcast_data = {}
                 if logits is not None:

@@ -246,8 +246,7 @@ class AttentionCGSupport(enum.Enum):
 
 class AttentionMetadataBuilder(abc.ABC, Generic[M]):
     # Does this backend/builder support CUDA Graphs for attention (default: no).
-    # TODO: hack
-    cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.ALWAYS
+    cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.NEVER
     # Does this backend/builder reorder the batch?
     # If not, set this to None. Otherwise set it to the query
     # length that will be pulled into the front of the batch.
@@ -952,9 +951,9 @@ def create_fast_prefill_custom_backend(
     return attn_backend
 
 
-def compute_causal_conv1d_metadata(query_start_loc_p: torch.Tensor):
+def compute_causal_conv1d_metadata(query_start_loc: torch.Tensor):
     # Needed for causal_conv1d
-    seqlens = query_start_loc_p.diff()
+    seqlens = query_start_loc.diff().to("cpu")
     nums_dict = {}  # type: ignore
     batch_ptr = None
     token_chunk_offset_ptr = None

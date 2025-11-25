@@ -44,7 +44,7 @@ class CachedRequestState:
 
     lora_request: Optional[LoRARequest] = None
     prompt_embeds: Optional[torch.Tensor] = None
-    next_input_embeds: Optional[torch.Tensor] = None
+    custom_inputs: Optional[dict[str, torch.Tensor]] = None
 
     def __post_init__(self):
         self.num_prompt_tokens = length_from_prompt_token_ids_or_embeds(
@@ -114,7 +114,10 @@ class InputBatch:
         # allocation if max_model_len is big.
         # Maps req_index -> tensor of shape (num_prompt_tokens, hidden_size)
         self.req_prompt_embeds: dict[int, torch.Tensor] = {}
-        self.req_next_embeds: dict[int, torch.Tensor] = {}
+        
+        # Custom inputs: Maps req_index -> {input_name -> tensor}
+        self.req_custom_inputs: dict[int, dict[str, torch.Tensor]] = {}
+
         self.num_tokens = np.zeros(max_num_reqs, dtype=np.int32)
         self.num_tokens_no_spec = np.zeros(max_num_reqs, dtype=np.int32)
         self.num_prompt_tokens = np.zeros(max_num_reqs, dtype=np.int32)
@@ -242,6 +245,9 @@ class InputBatch:
         # data structure
         self.logitsprocs = logitsprocs or LogitsProcessors()
 
+        # skip sampling is defined based on all the requests in the batch
+        self.skip_sampling = True
+
         # This is updated each time the batch constituents change.
         self.sampling_metadata = self._make_sampling_metadata()
 
@@ -314,8 +320,8 @@ class InputBatch:
             self.is_token_ids[req_index, :num_prompt_tokens] = False
         if request.prompt_embeds is not None:
             self.req_prompt_embeds[req_index] = request.prompt_embeds
-        if request.next_input_embeds is not None:
-            self.req_next_embeds[req_index] = request.next_input_embeds
+        if request.custom_inputs is not None:
+            self.req_custom_inputs[req_index] = request.custom_inputs
         self.token_ids_cpu[req_index, start_idx:end_idx] = request.output_token_ids
         self.is_token_ids[req_index, start_idx:end_idx] = True
         # Number of token ids in prompt (token_ids_cpu or prompt_embeds).
@@ -330,6 +336,7 @@ class InputBatch:
         if sampling_params := request.sampling_params:
             if self.is_spec_decode and is_spec_decode_unsupported(sampling_params):
                 self.spec_decode_unsupported_reqs.add(req_id)
+            self.skip_sampling &= sampling_params.skip_sampling
             if sampling_params.sampling_type == SamplingType.GREEDY:
                 # Should avoid division by zero later when apply_temperature.
                 self.temperature_cpu[req_index] = 0.0
@@ -535,16 +542,16 @@ class InputBatch:
         else:
             self.req_prompt_embeds.pop(i1, None)
         # swap next input embeddings if they exist
-        next_embeds_i1 = self.req_next_embeds.get(i1)
-        next_embeds_i2 = self.req_next_embeds.get(i2)
-        if next_embeds_i1 is not None:
-            self.req_next_embeds[i2] = next_embeds_i1
+        custom_inputs_i1 = self.req_custom_inputs.get(i1)
+        custom_inputs_i2 = self.req_custom_inputs.get(i2)
+        if custom_inputs_i1 is not None:
+            self.req_custom_inputs[i2] = custom_inputs_i1
         else:
-            self.req_next_embeds.pop(i2, None)
-        if next_embeds_i2 is not None:
-            self.req_next_embeds[i1] = next_embeds_i2
+            self.req_custom_inputs.pop(i2, None)
+        if custom_inputs_i2 is not None:
+            self.req_custom_inputs[i1] = custom_inputs_i2
         else:
-            self.req_next_embeds.pop(i1, None)
+            self.req_custom_inputs.pop(i1, None)
 
         self.block_table.swap_row(i1, i2)
 
@@ -655,8 +662,8 @@ class InputBatch:
                 self.req_prompt_embeds[empty_index] = self.req_prompt_embeds.pop(
                     last_req_index
                 )
-            if last_req_index in self.req_next_embeds:
-                self.req_next_embeds[empty_index] = self.req_next_embeds.pop(
+            if last_req_index in self.req_custom_inputs:
+                self.req_custom_inputs[empty_index] = self.req_custom_inputs.pop(
                     last_req_index
                 )
             self.num_tokens[empty_index] = num_tokens
@@ -810,6 +817,7 @@ class InputBatch:
             allowed_token_ids_mask=allowed_token_ids_mask,
             bad_words_token_ids=self.bad_words_token_ids,
             logitsprocs=self.logitsprocs,
+            skip_sampling=self.skip_sampling,
         )
 
     def get_pooling_params(self) -> list[PoolingParams]:

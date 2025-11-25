@@ -61,7 +61,7 @@ class Scheduler(SchedulerInterface):
         self.log_stats = log_stats
         self.structured_output_manager = structured_output_manager
         self.is_encoder_decoder = vllm_config.model_config.is_encoder_decoder
-        self.return_hidden_states = vllm_config.model_config.return_hidden_states
+        self.await_inputs = vllm_config.model_config.custom_input_specs is not None
 
         # include_finished_set controls whether a separate set of finished
         # request ids should be included in the EngineCoreOutputs returned
@@ -128,6 +128,9 @@ class Scheduler(SchedulerInterface):
         # Priority queues for requests.
         self.waiting = create_request_queue(self.policy)
         self.running: list[Request] = []
+        # contains reques_ids of the requests that are not currently running,
+        # but waiting for the inputs to be set
+        self.waiting_input: set[str] = set()
 
         # The request IDs that are finished in between the previous and the
         # current steps. This is used to notify the workers about the finished
@@ -214,10 +217,11 @@ class Scheduler(SchedulerInterface):
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
 
-            if request.is_streaming and not request.has_next_input_embeds():
-                # request cannot be scheduled because next input embeddings
-                # are not set yet
+            if self.await_inputs and not request.has_custom_inputs():
+                # request cannot be scheduled because custom inputs are not set yet
+                # pop them from running and mark as awaiting inputs
                 self.running.pop(req_index)
+                self.waiting_input.add(request.request_id)
                 continue
 
             num_new_tokens = (
@@ -613,7 +617,10 @@ class Scheduler(SchedulerInterface):
         # Construct the scheduler output.
         new_reqs_data = [
             NewRequestData.from_request(
-                req, req_to_new_blocks[req.request_id].get_block_ids()
+                req,
+                req_to_new_blocks[req.request_id].get_block_ids(),
+                num_scheduled_tokens[req.request_id],
+                self.await_inputs,
             )
             for req in scheduled_new_reqs
         ]
@@ -630,6 +637,7 @@ class Scheduler(SchedulerInterface):
         structured_output_request_ids, grammar_bitmask = self.get_grammar_bitmask(
             scheduled_requests, scheduled_spec_decode_tokens
         )
+
         scheduler_output = SchedulerOutput(
             scheduled_new_reqs=new_reqs_data,
             scheduled_cached_reqs=cached_reqs_data,
@@ -720,7 +728,7 @@ class Scheduler(SchedulerInterface):
         new_block_ids: list[tuple[list[int], ...] | None] = []
         num_computed_tokens: list[int] = []
         num_output_tokens: list[int] = []
-        new_input_embeds: list[torch.Tensor] = []
+        new_custom_inputs: list[dict[str, torch.Tensor]] = []
 
         use_connector = self.connector is not None
         for req in itertools.chain(running_reqs, resumed_reqs):
@@ -749,9 +757,14 @@ class Scheduler(SchedulerInterface):
             )
             num_computed_tokens.append(req.num_computed_tokens)
             num_output_tokens.append(len(req.output_token_ids))
-            # TODO: in `schedule` add a check that input_embeds are set
+            # TODO: in `schedule` add a check that custom inputs are set
             # for resumed_reqs
-            new_input_embeds.append(req.read_next_input_embeds())
+            # Read only the scheduled portion of custom_inputs (for chunked prefill)
+            if self.await_inputs:
+                scheduled_tokens = num_scheduled_tokens[req_id]
+                new_custom_inputs.append(
+                    req.read_custom_inputs(scheduled_tokens)
+                )
 
         # Because resumed_reqs is usually empty, it is more efficient to do
         # in-place appending so that we don't need to allocate a new list.
@@ -765,7 +778,7 @@ class Scheduler(SchedulerInterface):
             new_block_ids=new_block_ids,
             num_computed_tokens=num_computed_tokens,
             num_output_tokens=num_output_tokens,
-            new_input_embeds=new_input_embeds,
+            new_custom_inputs=new_custom_inputs,
         )
 
     def _try_schedule_encoder_inputs(
@@ -1037,9 +1050,9 @@ class Scheduler(SchedulerInterface):
             if num_nans_in_logits is not None and req_id in num_nans_in_logits:
                 request.num_nans_in_logits = num_nans_in_logits[req_id]
 
-            hidden_states = None
-            if self.return_hidden_states:
-                hidden_states = model_runner_output.hidden_states[req_index]
+            custom_outputs = None
+            if model_runner_output.custom_outputs:
+                custom_outputs = model_runner_output.custom_outputs[req_index]
 
             # Get prompt logprobs for this request.
             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
@@ -1051,7 +1064,7 @@ class Scheduler(SchedulerInterface):
                         new_token_ids=new_token_ids,
                         finish_reason=request.get_finished_reason(),
                         new_logprobs=new_logprobs,
-                        new_hidden_states=hidden_states,
+                        new_custom_outputs=custom_outputs,
                         new_prompt_logprobs_tensors=prompt_logprobs_tensors,
                         pooling_output=pooler_output,
                         stop_reason=request.stop_reason,
@@ -1188,18 +1201,32 @@ class Scheduler(SchedulerInterface):
         if self.log_stats:
             request.record_event(EngineCoreEventType.QUEUED)
 
-    def set_input_embeds(self, request_id: str, input_embeds: torch.Tensor) -> None:
+    def set_custom_inputs(self, request_id: str, custom_inputs: dict[str, torch.Tensor]) -> None:
         """
-        Sets input embeddings for a request.
+        Sets custom inputs for a request.
         This allows the request to be scheduled for execution.
         """
         request = self.requests.get(request_id)
         if request is None:
+            # The request might have finished between when the client queued this
+            # call and when it's processed. This is a race condition that can occur
+            # when a request finishes (e.g., reaches max_tokens) while the client
+            # is still processing previous outputs and hasn't received the finished
+            # notification yet.
+            if request_id in self.finished_req_ids:
+                # Request was just finished, silently ignore this call
+                logger.debug(
+                    "Ignoring set_custom_inputs for recently finished request %s",
+                    request_id
+                )
+                return
             raise ValueError(f"Request {request_id} not found")
-        if not request.is_streaming:
-            raise ValueError(f"Request {request_id} is not a sampling request")
-        request.set_next_input_embeds(input_embeds)
-        self.running.append(request)
+        if not self.await_inputs:
+            raise ValueError(f"Engine is not awaiting inputs, can't set custom inputs")
+        request.set_custom_inputs(custom_inputs)
+        if request_id in self.waiting_input:
+            self.waiting_input.remove(request_id)
+            self.running.append(request)
 
     def finish_requests(
         self,
@@ -1237,6 +1264,9 @@ class Scheduler(SchedulerInterface):
         # Remove all requests from queues at once for better efficiency
         if running_requests_to_remove:
             self.running = remove_all(self.running, running_requests_to_remove)
+            if self.await_inputs:
+                request_ids_to_remove = {r.request_id for r in running_requests_to_remove}
+                self.waiting_input = remove_all(self.waiting_input, request_ids_to_remove)
         if waiting_requests_to_remove:
             self.waiting.remove_requests(waiting_requests_to_remove)
 

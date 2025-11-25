@@ -31,7 +31,7 @@ from vllm.transformers_utils.config import maybe_register_config_serialize_by_va
 from vllm.transformers_utils.tokenizer import AnyTokenizer
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import Device, as_list, cancel_task_threadsafe, cdiv, deprecate_kwargs
-from vllm.v1.engine import EngineCoreRequest
+from vllm.v1.engine import EngineCoreRequest, EngineCoreAppendRequest
 from vllm.v1.engine.core_client import EngineCoreClient
 from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
 from vllm.v1.engine.output_processor import OutputProcessor, RequestOutputCollector
@@ -264,7 +264,6 @@ class AsyncLLM(EngineClient):
         priority: int = 0,
         data_parallel_rank: Optional[int] = None,
         prompt_text: Optional[str] = None,
-        is_streaming: Optional[bool] = None,
     ) -> RequestOutputCollector:
         """Add new request to the AsyncLLM."""
 
@@ -295,7 +294,6 @@ class AsyncLLM(EngineClient):
                 trace_headers,
                 priority,
                 data_parallel_rank,
-                is_streaming,
             )
             prompt_text = prompt if isinstance(prompt, str) else prompt.get("prompt")
 
@@ -320,15 +318,24 @@ class AsyncLLM(EngineClient):
             )
         return queue
 
-    async def append_request(self, request_id: str, input_embeds: torch.Tensor):
+    async def append_request(
+        self, 
+        request_id: str, 
+        custom_inputs: Optional[dict[str, torch.Tensor]] = None,
+    ):
         """
-        Adds new input embedding into existing request.
-        Once embeddings are added, the request will be scheduled for execution.
+        Adds new custom inputs into existing request.
+        Once inputs are added, the request will be scheduled for execution.
+        
+        Args:
+            request_id: The request ID
+            custom_inputs: Optional dictionary mapping input names to tensors
         """
         if self.errored:
             raise EngineDeadError()
-
-        await self.engine_core.set_input_embeds_async(request_id, input_embeds)
+        if custom_inputs is not None:
+            request = EngineCoreAppendRequest(request_id=request_id, custom_inputs=custom_inputs)
+            await self.engine_core.set_custom_inputs_async(request)
 
     async def _add_request(
         self,
@@ -364,7 +371,6 @@ class AsyncLLM(EngineClient):
         trace_headers: Optional[Mapping[str, str]] = None,
         priority: int = 0,
         data_parallel_rank: Optional[int] = None,
-        is_streaming: Optional[bool] = None,
     ) -> AsyncGenerator[RequestOutput, None]:
         """
         Main function called by the API server to kick off a request
@@ -417,7 +423,6 @@ class AsyncLLM(EngineClient):
                 priority=priority,
                 data_parallel_rank=data_parallel_rank,
                 prompt_text=prompt_text,
-                is_streaming=is_streaming,
             )
 
             # The output_handler task pushes items into the queue.

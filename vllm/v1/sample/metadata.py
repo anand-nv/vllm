@@ -14,6 +14,7 @@ class SamplingMetadata:
     temperature: Optional[torch.Tensor]
     all_greedy: bool
     all_random: bool
+    skip_sampling: bool
 
     top_p: Optional[torch.Tensor]
     top_k: Optional[torch.Tensor]

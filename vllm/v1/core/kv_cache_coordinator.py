@@ -337,8 +337,7 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
                     full_attention_spec = g.kv_cache_spec
                 else:
                     assert full_attention_spec == g.kv_cache_spec, (
-                        "HybridKVCacheCoordinator assumes exactly one type of "
-                        "full attention groups now."
+                        f"HybridKVCacheCoordinator assumes exactly one type of full attention groups now. But there is {full_attention_spec} and {g.kv_cache_spec}"
                     )
                 self.full_attention_group_ids.append(i)
             else:
@@ -346,8 +345,7 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
                     other_spec = g.kv_cache_spec
                 else:
                     assert other_spec == g.kv_cache_spec, (
-                        "HybridKVCacheCoordinator assumes "
-                        "exactly one other type of groups now."
+                        f"HybridKVCacheCoordinator assumes exactly one other type of groups now. But there is {other_spec} and {g.kv_cache_spec}"
                     )
                 self.other_group_ids.append(i)
 

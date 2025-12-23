@@ -56,15 +56,19 @@ from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
     RoutedExpertsCapturer,
 )
+from vllm.model_executor.layers.mamba.abstract import MambaBase
 from vllm.model_executor.layers.rotary_embedding import (
     MRotaryEmbedding,
     XDRotaryEmbedding,
 )
-from vllm.model_executor.model_loader import get_model_loader
+from vllm.model_executor.model_loader import TensorizerLoader, get_model_loader
 from vllm.model_executor.model_loader.reload import (
     finalize_layerwise_reload,
     initialize_layerwise_reload,
 )
+from vllm.model_executor.models.deepseek_v2 import DeepseekV32IndexerCache
+from vllm.model_executor.models.fastconformer import ConformerConvModule
+from vllm.model_executor.models.toy_conv import ToyConv2dLayer
 from vllm.model_executor.models.interfaces import (
     MultiModalEmbeddings,
     SupportsMRoPE,
@@ -6937,6 +6941,13 @@ class GPUModelRunner(
             # Skip modules that don't need KV cache (eg encoder-only attention)
             if spec := attn_module.get_kv_cache_spec(self.vllm_config):
                 kv_cache_spec[layer_name] = spec
+
+        # TODO: this is a toy conv2d in fastconformer, combine it with the conv1d of the model
+        toy_conv_layers = get_layers_from_vllm_config(
+            self.vllm_config, ToyConv2dLayer
+        )
+        for layer_name, toy_conv_module in toy_conv_layers.items():
+            kv_cache_spec[layer_name] = toy_conv_module.get_kv_cache_spec()
 
         return kv_cache_spec
 

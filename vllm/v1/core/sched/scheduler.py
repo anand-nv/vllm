@@ -1027,6 +1027,12 @@ class Scheduler(SchedulerInterface):
             )
             scheduler_output.ec_connector_metadata = ec_meta
 
+        # collect freed block IDs that need to be zeroed by the worker
+        if hasattr(self.kv_cache_manager, 'take_freed_block_ids'):
+            freed_block_ids = self.kv_cache_manager.take_freed_block_ids()
+            if freed_block_ids:
+                scheduler_output.block_ids_to_zero = freed_block_ids
+
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
         return scheduler_output

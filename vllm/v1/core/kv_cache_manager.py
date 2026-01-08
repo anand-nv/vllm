@@ -475,7 +475,16 @@ class KVCacheManager:
             A list of KV cache events.
         """
         return self.block_pool.take_events()
+    def take_freed_block_ids(self) -> list[int]:
+        """Take the freed block IDs from the block pool.
+        
+        These block IDs should be zeroed by the worker to prevent state
+        contamination when blocks are reused.
 
+        Returns:
+            A list of block IDs that were freed since the last call.
+        """
+        return self.block_pool.take_freed_block_ids()
     def get_blocks(self, request_id: str) -> KVCacheBlocks:
         """Get the blocks of a request."""
         return self.create_kv_cache_blocks(self.coordinator.get_blocks(request_id))

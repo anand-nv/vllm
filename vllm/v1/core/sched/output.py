@@ -251,6 +251,11 @@ class SchedulerOutput:
     # preventing stale NaN/data from corrupting attention or SSM computation.
     new_block_ids_to_zero: list[int] | None = None
 
+    # Block IDs that were freed and should be zeroed by the worker.
+    # This is needed to prevent state contamination when blocks are reused,
+    # particularly for Mamba layers that maintain conv_state and ssm_state.
+    block_ids_to_zero: list[int] | None = None
+
     @classmethod
     def make_empty(cls) -> "SchedulerOutput":
         return cls(

@@ -49,7 +49,7 @@ from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding
 from vllm.model_executor.model_loader import TensorizerLoader, get_model_loader
 from vllm.model_executor.models.deepseek_v2 import DeepseekV32IndexerCache
 from vllm.model_executor.models.fastconformer import ConformerConvModule
-from vllm.model_executor.models.toy_conv import ToyConv2dLayer, MelSpectrogramLayer
+from vllm.model_executor.models.fastconformer_preprocessor import Conv2dLayer, MelSpectrogramLayer
 from vllm.model_executor.models.interfaces import (
     SupportsMultiModal,
     is_mixture_of_experts,
@@ -4709,11 +4709,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             kv_cache_spec[layer_name] = fastconformer_conv_module.get_kv_cache_spec()
 
         # TODO: this is a toy conv2d in fastconformer, combine it with the conv1d of the model
-        toy_conv_layers = get_layers_from_vllm_config(
-            self.vllm_config, ToyConv2dLayer
+        conv2d_layers = get_layers_from_vllm_config(
+            self.vllm_config, Conv2dLayer
         )
-        for layer_name, toy_conv_module in toy_conv_layers.items():
-            kv_cache_spec[layer_name] = toy_conv_module.get_kv_cache_spec()
+        for layer_name, conv2d_module in conv2d_layers.items():
+            kv_cache_spec[layer_name] = conv2d_module.get_kv_cache_spec()
         stft_layers = get_layers_from_vllm_config(
             self.vllm_config, MelSpectrogramLayer
         )

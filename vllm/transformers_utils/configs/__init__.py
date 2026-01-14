@@ -32,7 +32,6 @@ from vllm.transformers_utils.configs.qwen3_next import Qwen3NextConfig
 from vllm.transformers_utils.configs.radio import RadioConfig
 from vllm.transformers_utils.configs.speculators.base import SpeculatorsConfig
 from vllm.transformers_utils.configs.fastconformer import FastConformerCTCConfig
-from vllm.transformers_utils.configs.toy_conv import ToyConvConfig
 from vllm.transformers_utils.configs.step3_vl import (
     Step3TextConfig,
     Step3VisionEncoderConfig,
@@ -47,7 +46,6 @@ __all__ = [
     "DotsOCRConfig",
     "EAGLEConfig",
     "FastConformerCTCConfig",
-    "ToyConvConfig",
     "RWConfig",
     "JAISConfig",
     "MedusaConfig",

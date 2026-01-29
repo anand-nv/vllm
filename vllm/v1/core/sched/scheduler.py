@@ -157,6 +157,10 @@ class Scheduler(SchedulerInterface):
 
         # req_id -> Request
         self.requests: dict[str, Request] = {}
+        # CFG (Classifier Free Guidance) pairs: conditional_req_id -> uncond Request
+        # Unconditional requests are NOT in waiting/running queues.
+        # Their lifecycle is entirely managed through their conditional pair.
+        self.cfg_pairs: dict[str, Request] = {}
         # Scheduling policy
         try:
             self.policy = SchedulingPolicy(self.scheduler_config.policy)
@@ -356,6 +360,9 @@ class Scheduler(SchedulerInterface):
         scheduled_resumed_reqs: list[Request] = []
         scheduled_running_reqs: list[Request] = []
         preempted_reqs: list[Request] = []
+        # CFG pairs scheduled in this step (mirrors conditional's scheduling)
+        scheduled_new_cfg_pairs: list[Request] = []
+        scheduled_cached_cfg_pairs: list[Request] = []
 
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
         num_scheduled_tokens: dict[str, int] = {}
@@ -441,6 +448,10 @@ class Scheduler(SchedulerInterface):
                     request, num_new_tokens
                 )
 
+            # Check for CFG pair - we need to ensure budget for both cond and uncond
+            cfg_uncond = self.cfg_pairs.get(request.request_id)
+            tokens_required = num_new_tokens * 2 if cfg_uncond else num_new_tokens
+
             if num_new_tokens == 0:
                 # The request cannot be scheduled because one of the following
                 # reasons:
@@ -456,6 +467,12 @@ class Scheduler(SchedulerInterface):
                 # NOTE(woosuk): Here, by doing `continue` instead of `break`,
                 # we do not strictly follow the FCFS scheduling policy and
                 # allow the lower-priority requests to be scheduled.
+                req_index += 1
+                continue
+
+            # CFG: Check upfront if we have token budget for both cond and uncond
+            if tokens_required > token_budget:
+                # Not enough token budget for CFG pair, skip to next request
                 req_index += 1
                 continue
 
@@ -511,12 +528,32 @@ class Scheduler(SchedulerInterface):
                 # Cannot schedule this request.
                 break
 
+            # Try to schedule CFG unconditional pair (if any)
+            cfg_uncond_blocks = None
+            if cfg_uncond is not None:
+                cfg_uncond_blocks = self._try_schedule_cfg_uncond(
+                    cfg_uncond, request.status, num_new_tokens, is_new_request=False
+                )
+                if cfg_uncond_blocks is None:
+                    # Cannot schedule CFG pair - cannot schedule conditional either
+                    # Free the blocks we just allocated for conditional
+                    self.kv_cache_manager.free(request)
+                    break
+
             # Schedule the request.
             scheduled_running_reqs.append(request)
             request_id = request.request_id
             req_to_new_blocks[request_id] = new_blocks
             num_scheduled_tokens[request_id] = num_new_tokens
             token_budget -= num_new_tokens
+
+            # Also record CFG uncond if present
+            if cfg_uncond is not None:
+                scheduled_cached_cfg_pairs.append(cfg_uncond)
+                req_to_new_blocks[cfg_uncond.request_id] = cfg_uncond_blocks
+                num_scheduled_tokens[cfg_uncond.request_id] = num_new_tokens
+                token_budget -= num_new_tokens
+
             req_index += 1
 
             # Speculative decode related.
@@ -546,6 +583,13 @@ class Scheduler(SchedulerInterface):
                     if self.ec_connector is not None:
                         self.ec_connector.update_state_after_alloc(request, i)
                 encoder_compute_budget = new_encoder_compute_budget
+                # Also allocate for CFG uncond if present
+                if cfg_uncond is not None:
+                    scheduled_encoder_inputs[cfg_uncond.request_id] = (
+                        encoder_inputs_to_schedule
+                    )
+                    for i in encoder_inputs_to_schedule:
+                        self.encoder_cache_manager.allocate(cfg_uncond, i)
             if external_load_encoder_input:
                 for i in external_load_encoder_input:
                     self.encoder_cache_manager.allocate(request, i)
@@ -655,6 +699,13 @@ class Scheduler(SchedulerInterface):
                 external_load_encoder_input = []
                 new_encoder_compute_budget = encoder_compute_budget
 
+                # Check for CFG pair - needed for budget calculations
+                # (CFG not supported with async KV loading)
+                cfg_uncond = (
+                    None if load_kv_async
+                    else getattr(self, 'cfg_pairs', {}).get(request.request_id)
+                )
+
                 if load_kv_async:
                     # KVTransfer: loading remote KV, do not allocate for new work.
                     assert num_external_computed_tokens > 0
@@ -669,17 +720,20 @@ class Scheduler(SchedulerInterface):
                     if 0 < threshold < num_new_tokens:
                         num_new_tokens = threshold
 
+                    # CFG: Calculate tokens required for both cond and uncond
+                    tokens_required = num_new_tokens * 2 if cfg_uncond else num_new_tokens
+
                     # chunked prefill has to be enabled explicitly to allow
                     # pooling requests to be chunked
                     if (
-                        not self.scheduler_config.enable_chunked_prefill
-                        and num_new_tokens > token_budget
+                        not self.scheduler_config.chunked_prefill_enabled
+                        and tokens_required > token_budget
                     ):
                         # If chunked_prefill is disabled,
                         # we can stop the scheduling here.
                         break
 
-                    num_new_tokens = min(num_new_tokens, token_budget)
+                    num_new_tokens = min(num_new_tokens, token_budget // (2 if cfg_uncond else 1))
                     assert num_new_tokens > 0
 
                     # Schedule encoder inputs.
@@ -751,6 +805,18 @@ class Scheduler(SchedulerInterface):
                         self.encoder_cache_manager.free(request)
                     break
 
+                # Try to schedule CFG unconditional pair (if any)
+                cfg_uncond_blocks = None
+                if cfg_uncond is not None:
+                    cfg_uncond_blocks = self._try_schedule_cfg_uncond(
+                        cfg_uncond, request.status, num_new_tokens, is_new_request=True
+                    )
+                    if cfg_uncond_blocks is None:
+                        # Cannot schedule CFG pair - cannot schedule conditional either
+                        # Free the blocks we just allocated for conditional
+                        self.kv_cache_manager.free(request)
+                        break
+
                 # KVTransfer: the connector uses this info to determine
                 # if a load is needed. Note that
                 # This information is used to determine if a load is
@@ -798,7 +864,8 @@ class Scheduler(SchedulerInterface):
                     request.record_event(
                         EngineCoreEventType.SCHEDULED, scheduled_timestamp
                     )
-                if request.status == RequestStatus.WAITING:
+                is_new_request = request.status == RequestStatus.WAITING
+                if is_new_request:
                     scheduled_new_reqs.append(request)
                 elif request.status == RequestStatus.PREEMPTED:
                     scheduled_resumed_reqs.append(request)
@@ -814,6 +881,18 @@ class Scheduler(SchedulerInterface):
                 token_budget -= num_new_tokens
                 request.status = RequestStatus.RUNNING
                 request.num_computed_tokens = num_computed_tokens
+
+                # Also record CFG uncond if present
+                if cfg_uncond is not None:
+                    cfg_uncond.status = RequestStatus.RUNNING
+                    # CFG pairs from waiting queue are always "new" to workers
+                    # (either first time, or re-sent after preemption)
+                    scheduled_new_cfg_pairs.append(cfg_uncond)
+                    req_to_new_blocks[cfg_uncond.request_id] = (
+                        self.kv_cache_manager.get_blocks(cfg_uncond.request_id)
+                    )
+                    num_scheduled_tokens[cfg_uncond.request_id] = num_new_tokens
+                    token_budget -= num_new_tokens
                 # Count the number of prefix cached tokens.
                 if request.num_cached_tokens < 0:
                     request.num_cached_tokens = num_computed_tokens
@@ -826,6 +905,13 @@ class Scheduler(SchedulerInterface):
                         if self.ec_connector is not None:
                             self.ec_connector.update_state_after_alloc(request, i)
                     encoder_compute_budget = new_encoder_compute_budget
+                    # Also allocate for CFG uncond if present
+                    if cfg_uncond is not None:
+                        scheduled_encoder_inputs[cfg_uncond.request_id] = (
+                            encoder_inputs_to_schedule
+                        )
+                        for i in encoder_inputs_to_schedule:
+                            self.encoder_cache_manager.allocate(cfg_uncond, i)
                 # Allocate for external load encoder cache
                 if external_load_encoder_input:
                     for i in external_load_encoder_input:
@@ -965,7 +1051,61 @@ class Scheduler(SchedulerInterface):
         # Put the request back to the waiting queue.
         self.waiting.prepend_request(request)
 
-    def _update_after_schedule(self, scheduler_output: SchedulerOutput) -> None:
+    def _try_schedule_cfg_uncond(
+        self,
+        cfg_uncond: Request,
+        cond_status: RequestStatus,
+        num_tokens: int,
+        is_new_request: bool,
+    ) -> "KVCacheBlocks | None":
+        """Try to schedule the CFG unconditional pair for a conditional request.
+
+        Must be called immediately after successfully scheduling the conditional.
+        If this fails, the caller should undo the conditional's scheduling.
+
+        Args:
+            cfg_uncond: The unconditional CFG request to schedule
+            cond_status: Status of the conditional request (to sync)
+            num_tokens: Number of tokens to schedule (same as conditional)
+            is_new_request: True if this is first time scheduling (for block allocation)
+
+        Returns:
+            The allocated blocks if successful, None if failed
+        """
+        # Sync state from conditional to unconditional
+        cfg_uncond.status = cond_status
+
+        # Allocate blocks for the unconditional request
+        if is_new_request or cfg_uncond.num_computed_tokens == 0:
+            # First time scheduling - need to get computed blocks
+            new_computed_blocks, num_computed_tokens = (
+                self.kv_cache_manager.get_computed_blocks(cfg_uncond)
+            )
+            cfg_uncond.num_computed_tokens = num_computed_tokens
+            if cfg_uncond.num_cached_tokens < 0:
+                cfg_uncond.num_cached_tokens = num_computed_tokens
+
+            new_blocks = self.kv_cache_manager.allocate_slots(
+                cfg_uncond,
+                num_tokens,
+                num_computed_tokens,
+                new_computed_blocks,
+                num_lookahead_tokens=self.num_lookahead_tokens,
+            )
+        else:
+            # Already has computed tokens - just allocate new slots
+            new_blocks = self.kv_cache_manager.allocate_slots(
+                cfg_uncond,
+                num_tokens,
+                num_lookahead_tokens=self.num_lookahead_tokens,
+            )
+
+        return new_blocks
+
+    def _update_after_schedule(
+        self,
+        scheduler_output: SchedulerOutput,
+    ) -> None:
         # Advance the number of computed tokens for the request AFTER
         # the request is scheduled.
         # 1. The scheduler_output of the current step has to include the
@@ -1357,6 +1497,11 @@ class Scheduler(SchedulerInterface):
                 # In this case, we use is_finished() to check.
                 continue
 
+            # CFG unconditional requests are synced from their conditional pair
+            # They don't emit outputs to the client
+            if request.is_cfg_unconditional:
+                continue
+
             req_index = model_runner_output.req_id_to_index[req_id]
             generated_token_ids = (
                 sampled_token_ids[req_index] if sampled_token_ids else []
@@ -1480,6 +1625,13 @@ class Scheduler(SchedulerInterface):
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors
+
+            # Sync output tokens to CFG unconditional pair
+            # The unconditional request mirrors the conditional's output
+            cfg_uncond = self.cfg_pairs.get(req_id)
+            if cfg_uncond is not None and new_token_ids:
+                for token_id in new_token_ids:
+                    cfg_uncond.append_output_token_ids(token_id)
 
         # Remove the stopped requests from the running and waiting queues.
         if stopped_running_reqs:
@@ -1756,10 +1908,37 @@ class Scheduler(SchedulerInterface):
             if self.log_stats:
                 request.record_event(EngineCoreEventType.QUEUED)
 
+        # Check if CFG is enabled and create unconditional clone
+        # CFG pairs are NOT added to waiting/running queues - their lifecycle
+        # is entirely managed through their conditional request.
+        if (
+            request.sampling_params is not None
+            and request.sampling_params.guidance_scale is not None
+            and not request.is_cfg_unconditional  # Don't clone the clone
+        ):
+            uncond_request = request.create_cfg_unconditional_clone()
+            self.cfg_pairs[request.request_id] = uncond_request
+            # Also add to requests dict for lookup purposes
+            self.requests[uncond_request.request_id] = uncond_request
+
+    def get_cfg_uncond_request(self, request: Request) -> Request | None:
+        """Get the unconditional CFG request paired with a conditional request.
+
+        Args:
+            request: The conditional request.
+
+        Returns:
+            The unconditional request, or None if not a CFG pair.
+        """
+        return self.cfg_pairs.get(request.request_id)
+
     def set_custom_inputs(self, request_id: str, custom_inputs: dict[str, torch.Tensor]) -> None:
         """
         Sets custom inputs for a request.
         This allows the request to be scheduled for execution.
+
+        For CFG pairs: when custom inputs are set for a conditional request,
+        they are also automatically shared with its unconditional pair.
         """
         request = self.requests.get(request_id)
         if request is None:
@@ -1783,6 +1962,13 @@ class Scheduler(SchedulerInterface):
             self.waiting_input.remove(request_id)
             self.running.append(request)
 
+        # Sync custom inputs to CFG pair (if exists)
+        # CFG pairs are NOT in waiting/running queues - they shadow the conditional
+        cfg_uncond = self.get_cfg_uncond_request(request)
+        if cfg_uncond is not None:
+            # Share the same custom_inputs reference for CFG pair
+            cfg_uncond.set_custom_inputs(custom_inputs)
+
     def finish_requests(
         self, request_ids: str | Iterable[str] | None, finished_status: RequestStatus
     ) -> list[tuple[str, int]]:
@@ -1792,6 +1978,9 @@ class Scheduler(SchedulerInterface):
         disconnects.
 
         If request_ids is None, all requests will be finished.
+
+        For CFG pairs: when a conditional request is finished, its
+        unconditional pair is also finished automatically via _free_request.
 
         Returns:
             Tuple of (req_id, client_index) for requests that were aborted. Will not
@@ -1809,11 +1998,16 @@ class Scheduler(SchedulerInterface):
         waiting_requests_to_remove = []
         valid_requests = []
 
-        # First pass: collect requests to remove from queues
+        # Collect requests to remove from queues
+        # Note: CFG unconditional requests are NOT in queues, they're in cfg_pairs
         for req_id in request_ids:
             request = self.requests.get(req_id)
             if request is None or request.is_finished():
                 # Invalid request ID.
+                continue
+
+            # Skip unconditional CFG requests - they're managed via their conditional
+            if request.is_cfg_unconditional:
                 continue
 
             valid_requests.append(request)
@@ -1834,7 +2028,7 @@ class Scheduler(SchedulerInterface):
             self.waiting.remove_requests(waiting_requests_to_remove)
             self.skipped_waiting.remove_requests(waiting_requests_to_remove)
 
-        # Second pass: set status and free requests
+        # Second pass: set status and free requests (including their CFG pairs)
         for request in valid_requests:
             delay_free_blocks = False
             if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
@@ -1864,6 +2058,14 @@ class Scheduler(SchedulerInterface):
         delay_free_blocks |= connector_delay_free_blocks
         if not delay_free_blocks:
             self._free_blocks(request)
+
+        # Also free the CFG unconditional pair if this is a conditional request
+        cfg_uncond = self.cfg_pairs.pop(request_id, None)
+        if cfg_uncond is not None:
+            cfg_uncond.status = request.status
+            self.encoder_cache_manager.free(cfg_uncond)
+            self.finished_req_ids.add(cfg_uncond.request_id)
+            self._free_blocks(cfg_uncond)
 
         return kv_xfer_params
 

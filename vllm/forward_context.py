@@ -15,7 +15,10 @@ from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.v1.attention.backend import AttentionMetadata
 from vllm.v1.worker.dp_utils import coordinate_batch_across_dp
-from vllm.v1.worker.ubatch_utils import UBatchSlices
+from vllm.v1.worker.ubatch_utils import UBatchSlices, is_second_ubatch_empty
+
+if TYPE_CHECKING:
+    from vllm.v1.cfg_metadata import CFGMetadata
 
 logger = init_logger(__name__)
 
@@ -240,6 +243,9 @@ class ForwardContext:
 
     additional_kwargs: dict[str, Any] = field(default_factory=dict)
 
+    # CFG (Classifier Free Guidance) metadata for combining cond/uncond logits
+    cfg_metadata: Optional["CFGMetadata"] = None
+
     def __post_init__(self):
         assert self.cudagraph_runtime_mode.is_valid_runtime_mode(), (
             f"Invalid cudagraph runtime mode: {self.cudagraph_runtime_mode}"
@@ -273,6 +279,7 @@ def create_forward_context(
     slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
     additional_kwargs: dict[str, Any] | None = None,
     skip_compiled: bool = False,
+    cfg_metadata: "CFGMetadata | None" = None,
 ):
     if vllm_config.compilation_config.fast_moe_cold_start:
         all_moe_layers = vllm_config.compilation_config.static_all_moe_layers
@@ -291,6 +298,7 @@ def create_forward_context(
         ubatch_slices=ubatch_slices,
         skip_compiled=skip_compiled,
         additional_kwargs=additional_kwargs or {},
+        cfg_metadata=cfg_metadata,
     )
 
 
@@ -321,6 +329,7 @@ def set_forward_context(
     ubatch_slices: UBatchSlices | None = None,
     slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
     skip_compiled: bool = False,
+    cfg_metadata: "CFGMetadata | None" = None,
 ):
     """A context manager that stores the current forward context,
     can be attention metadata, etc.
@@ -382,6 +391,7 @@ def set_forward_context(
         slot_mapping,
         additional_kwargs,
         skip_compiled,
+        cfg_metadata,
     )
 
     try:

@@ -64,6 +64,9 @@ class CommonAttentionMetadata:
     query_start_loc_cpu: torch.Tensor
     """(batch_size + 1,), the start location of each request in query Tensor"""
 
+    doc_ids: torch.Tensor
+    decode_offset: torch.Tensor
+
     seq_lens: torch.Tensor
     seq_lens_cpu: torch.Tensor
     """(batch_size,), the length of each request including both computed tokens
@@ -948,13 +951,13 @@ def create_fast_prefill_custom_backend(
     return attn_backend
 
 
-def compute_causal_conv1d_metadata(query_start_loc_p: torch.Tensor):
+def compute_causal_conv1d_metadata(query_start_loc: torch.Tensor):
     # Needed for causal_conv1d
-    seqlens = query_start_loc_p.diff().to("cpu")
+    seqlens = query_start_loc.diff().to("cpu")
     nums_dict = {}  # type: ignore
     batch_ptr = None
     token_chunk_offset_ptr = None
-    device = query_start_loc_p.device
+    device = "cuda"
     for BLOCK_M in [8]:  # cover all BLOCK_M values
         nums = -(-seqlens // BLOCK_M)
         nums_dict[BLOCK_M] = {}

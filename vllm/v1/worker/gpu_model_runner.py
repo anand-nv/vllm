@@ -48,6 +48,8 @@ from vllm.model_executor.layers.mamba.abstract import MambaBase
 from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding
 from vllm.model_executor.model_loader import TensorizerLoader, get_model_loader
 from vllm.model_executor.models.deepseek_v2 import DeepseekV32IndexerCache
+from vllm.model_executor.models.fastconformer import ConformerConvModule
+from vllm.model_executor.models.fastconformer_preprocessor import Conv2dLayer, MelSpectrogramLayer
 from vllm.model_executor.models.interfaces import (
     SupportsMultiModal,
     is_mixture_of_experts,
@@ -106,6 +108,7 @@ from vllm.v1.kv_cache_interface import (
     KVCacheGroupSpec,
     KVCacheSpec,
     MambaSpec,
+    FastConformerConvSpec,
     MLAAttentionSpec,
     SlidingWindowSpec,
     UniformTypeKVCacheSpecs,
@@ -393,6 +396,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self.query_start_loc = self._make_buffer(
             self.max_num_reqs + 1, dtype=torch.int32
         )
+        self.doc_ids = self._make_buffer(self.max_num_tokens, dtype=torch.int32)
+        self.decode_offset = self._make_buffer(self.max_num_reqs, dtype=torch.int32)
         self.seq_lens = self._make_buffer(self.max_num_reqs, dtype=torch.int32)
         # Because inputs_embeds may be bfloat16 and we don't need a numpy
         # version of this tensor, avoid a RuntimeError by not creating a
@@ -1222,6 +1227,22 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self.query_start_loc.copy_to_gpu()
         query_start_loc = self.query_start_loc.gpu[: num_reqs + 1]
 
+        # TODO: this probably isn't optimal
+        # TODO: I don't think doc_ids is needed. verify later
+        doc_ids_np = np.empty(total_num_scheduled_tokens, dtype=np.int32)
+        for doc_idx in range(num_reqs):
+            start = self.query_start_loc.np[doc_idx]
+            end = self.query_start_loc.np[doc_idx + 1]
+            if end > start:
+                doc_ids_np[start:end] = doc_idx
+        self.doc_ids.np[:total_num_scheduled_tokens] = doc_ids_np
+        self.doc_ids.copy_to_gpu()
+        doc_ids = self.doc_ids.gpu[:total_num_scheduled_tokens]
+
+        self.decode_offset.np[:num_reqs] = self.input_batch.num_computed_tokens_cpu[:num_reqs]
+        self.decode_offset.copy_to_gpu()
+        decode_offset = self.decode_offset.gpu[:num_reqs]
+
         num_tokens_unpadded = scheduler_output.total_num_scheduled_tokens
         num_tokens_padded = num_tokens_unpadded + self.get_local_padding(
             num_tokens_unpadded
@@ -1378,9 +1399,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             common_attn_metadata = CommonAttentionMetadata(
                 query_start_loc=query_start_loc,
                 query_start_loc_cpu=query_start_loc_cpu,
+                doc_ids=doc_ids,
                 seq_lens=seq_lens,
                 seq_lens_cpu=seq_lens_cpu,
                 num_computed_tokens_cpu=num_computed_tokens_cpu,
+                decode_offset=decode_offset,
                 num_reqs=num_reqs,
                 num_actual_tokens=total_num_scheduled_tokens,
                 max_query_len=max_num_scheduled_tokens,
@@ -2810,9 +2833,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     )
                     output.kv_connector_output = kv_connector_output
                     return output
-
-                sample_hidden_states = hidden_states[logits_indices]
-                logits = self.model.compute_logits(sample_hidden_states)
+                # TODO: merge in slava's skip_sampling metadata code
+                skip_sampling = True
+                if skip_sampling:
+                    logits = None
+                else:
+                    sample_hidden_states = hidden_states[logits_indices]
+                    logits = self.model.compute_logits(sample_hidden_states)
             else:
                 # Rare case.
                 assert not self.is_pooling_model
@@ -2830,8 +2857,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     )
                     logits = None
                 else:
-                    sample_hidden_states = hidden_states[logits_indices]
-                    logits = self.model.compute_logits(sample_hidden_states)
+                    # TODO: merge in slava's skip_sampling metadata code
+                    skip_sampling = True
+                    if skip_sampling:
+                        logits = None
+                    else:
+                        sample_hidden_states = hidden_states[logits_indices]
+                        logits = self.model.compute_logits(sample_hidden_states)
 
                 model_output_broadcast_data = {}
                 if logits is not None:
@@ -3615,6 +3647,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 common_attn_metadata = CommonAttentionMetadata(
                     query_start_loc=self.query_start_loc.gpu[: num_reqs + 1],
                     query_start_loc_cpu=self.query_start_loc.cpu[: num_reqs + 1],
+                    doc_ids=self.doc_ids.gpu[:num_tokens],
+                    decode_offset=self.decode_offset.gpu[:num_reqs],
                     seq_lens=self.seq_lens.gpu[:num_reqs],
                     seq_lens_cpu=self.seq_lens.cpu[:num_reqs],
                     num_computed_tokens_cpu=self.input_batch.num_computed_tokens_cpu_tensor[
@@ -4014,7 +4048,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             if self.is_pooling_model:
                 output = self._dummy_pooler_run(hidden_states)
             else:
-                output = self._dummy_sampler_run(last_hidden_states)
+                # output = self._dummy_sampler_run(last_hidden_states)
+                output = None
         else:
             output = None
         self._sync_device()
@@ -4576,6 +4611,29 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                         .view(kv_cache_shape)
                         .permute(*inv_order)
                     )
+                elif isinstance(kv_cache_spec, FastConformerConvSpec):
+                    # Get per-layer spec from the module since layers with 
+                    # same page_size but different shapes are grouped together.
+                    # The group's kv_cache_spec uses the first layer's shape,
+                    # but each layer needs its own shape for proper reshaping.
+                    layer_module = self.compilation_config.static_forward_context.get(
+                        layer_name
+                    )
+                    if layer_module is not None and hasattr(
+                        layer_module, "get_kv_cache_spec"
+                    ):
+                        per_layer_spec = layer_module.get_kv_cache_spec()
+                        layer_shape = per_layer_spec.shape
+                    else:
+                        # Fallback to group spec shape if module not found
+                        layer_shape = kv_cache_spec.shape
+
+                    dtype = kv_cache_spec.dtype
+                    raw_tensor = kv_cache_raw_tensors[layer_name]
+                    kv_cache_shape = (num_blocks, *layer_shape)
+                    kv_caches[layer_name] = (
+                        raw_tensor.view(dtype).view(kv_cache_shape)
+                    )
                 elif isinstance(kv_cache_spec, MambaSpec):
                     has_mamba = True
                     raw_tensor = kv_cache_raw_tensors[layer_name]
@@ -4873,6 +4931,24 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         )
         for layer_name, ds_indexer_module in ds_indexer_layers.items():
             kv_cache_spec[layer_name] = ds_indexer_module.get_kv_cache_spec()
+
+        fastconformer_conv_layers = get_layers_from_vllm_config(
+            self.vllm_config, ConformerConvModule
+        )
+        for layer_name, fastconformer_conv_module in fastconformer_conv_layers.items():
+            kv_cache_spec[layer_name] = fastconformer_conv_module.get_kv_cache_spec()
+
+        # TODO: this is a toy conv2d in fastconformer, combine it with the conv1d of the model
+        conv2d_layers = get_layers_from_vllm_config(
+            self.vllm_config, Conv2dLayer
+        )
+        for layer_name, conv2d_module in conv2d_layers.items():
+            kv_cache_spec[layer_name] = conv2d_module.get_kv_cache_spec()
+        stft_layers = get_layers_from_vllm_config(
+            self.vllm_config, MelSpectrogramLayer
+        )
+        for layer_name, stft_module in stft_layers.items():
+            kv_cache_spec[layer_name] = stft_module.get_kv_cache_spec()
 
         return kv_cache_spec
 

@@ -4048,6 +4048,8 @@ class GPUModelRunner(
                         num_scheduled_tokens_np,
                         kv_connector_output,
                     )
+                    output.kv_connector_output = kv_connector_output
+                    return output
 
                 sample_hidden_states = hidden_states[logits_indices]
                 logits = self.model.compute_logits(sample_hidden_states)
@@ -4069,6 +4071,7 @@ class GPUModelRunner(
                     )
                     logits = None
                 else:
+                    sample_hidden_states = hidden_states[logits_indices]
                     logits = self.model.compute_logits(sample_hidden_states)
 
                 model_output_broadcast_data: dict[str, Any] = {}

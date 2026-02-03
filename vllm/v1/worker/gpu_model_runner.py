@@ -5546,7 +5546,8 @@ class GPUModelRunner(
     ) -> torch.Tensor:
         # Check if hidden states is an integer tensor (long or int32)
         is_int_tensor = hidden_states.dtype in (torch.int32, torch.int64, torch.long, torch.int16)
-        
+
+
         # The dummy hidden states may contain special values,
         # like `inf` or `nan`.
         # To avoid breaking the sampler, we use a random tensor here instead.

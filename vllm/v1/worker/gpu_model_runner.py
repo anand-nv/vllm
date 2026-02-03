@@ -6500,7 +6500,7 @@ class GPUModelRunner(
 
         # Access KV cache from model layers
         for layer_name, layer in self.model.named_modules():
-            if not hasattr(layer, 'kv_cache'):
+            if not isinstance(layer, MambaBase):
                 continue
 
             kv_cache = layer.kv_cache

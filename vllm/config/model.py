@@ -256,14 +256,6 @@ class ModelConfig:
     OpenAI Chat Completions API. -1 means no cap, i.e. all (output_length *
     vocab_size) logprobs are allowed to be returned and it may cause OOM."""
     logprobs_mode: LogprobsMode = "raw_logprobs"
-    """Indicates the content returned in the logprobs and prompt_logprobs.
-    Supported mode:
-    1) raw_logprobs, 2) processed_logprobs, 3) raw_logits, 4) processed_logits.
-    Raw means the values before applying any logit processors, like bad words.
-    Processed means the values after applying all processors, including
-    temperature and top_k/top_p.
-    """
-    return_hidden_states: bool = False
     """Whether to return the last layer hidden states of the model."""
     disable_sliding_window: bool = False
     """Whether to disable sliding window. If True, we will disable the sliding

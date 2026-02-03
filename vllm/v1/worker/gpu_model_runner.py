@@ -2833,13 +2833,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     )
                     output.kv_connector_output = kv_connector_output
                     return output
-                # TODO: merge in slava's skip_sampling metadata code
-                skip_sampling = True
-                if skip_sampling:
-                    logits = None
-                else:
-                    sample_hidden_states = hidden_states[logits_indices]
-                    logits = self.model.compute_logits(sample_hidden_states)
+
+                sample_hidden_states = hidden_states[logits_indices]
+                logits = self.model.compute_logits(sample_hidden_states)
             else:
                 # Rare case.
                 assert not self.is_pooling_model
@@ -2857,13 +2853,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     )
                     logits = None
                 else:
-                    # TODO: merge in slava's skip_sampling metadata code
-                    skip_sampling = True
-                    if skip_sampling:
-                        logits = None
-                    else:
-                        sample_hidden_states = hidden_states[logits_indices]
-                        logits = self.model.compute_logits(sample_hidden_states)
+                    sample_hidden_states = hidden_states[logits_indices]
+                    logits = self.model.compute_logits(sample_hidden_states)
 
                 model_output_broadcast_data = {}
                 if logits is not None:
@@ -4048,8 +4039,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             if self.is_pooling_model:
                 output = self._dummy_pooler_run(hidden_states)
             else:
-                # output = self._dummy_sampler_run(last_hidden_states)
-                output = None
+                output = self._dummy_sampler_run(last_hidden_states)
         else:
             output = None
         self._sync_device()

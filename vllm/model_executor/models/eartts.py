@@ -486,7 +486,6 @@ class MoGHead(nn.Module):
                 else None
             )
         )
-        self.logits_processor = None
 
         self.mlp_stack = nn.Sequential(
             *[
@@ -735,6 +734,13 @@ class MaskGITSampler(nn.Module):
                 + torch.exp(mog_logs) * torch.randn_like(mog_mu) * self.noise_scale
             )
             code = self._depthsum_encoding_step_reshaped(z, code, cnt, k)
+
+            if self.config.enable_guidance:
+                # next mog head iteration uses cond tokens as input, avoiding divergence
+                cfg_metadata = get_forward_context().cfg_metadata
+                if cfg_metadata is not None:
+                    code[:, cfg_metadata.uncond_logits_indices] = code[:, cfg_metadata.cond_logits_indices]
+
             cnt += k
         return code.transpose(0, 1)  # BT x num_quantizers
 

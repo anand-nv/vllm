@@ -7,6 +7,7 @@ import argparse
 import torch
 from omegaconf import OmegaConf, DictConfig
 from safetensors.torch import save_file, load_file
+from transformers import AutoConfig
 
 from nemo.collections.speechlm2.models.duplex_ear_tts import DuplexEARTTS
 
@@ -19,12 +20,11 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
-    os.makedirs(args.outdir, exist_ok=True)
+def convert(outdir, config, model_path):
+    os.makedirs(outdir, exist_ok=True)
 
     # load config
-    with open(args.config, "r") as f:
+    with open(config, "r") as f:
         config_dict = json.load(f)["model"]["speech_generation"]
     cfg = DictConfig(config_dict)
     # config modification that is needed to run inference
@@ -39,6 +39,7 @@ def main():
     cfg.model.num_delay_speech_tokens = 0
     cfg.data.source_sample_rate = 22050
     cfg.data.target_sample_rate = 22050
+    cfg.model.pretrained_model = None
     model = DuplexEARTTS(OmegaConf.to_container(cfg, resolve=True)).eval()
     # get subword encoder vocabs and config
     subword_id_to_char_ids = model.tts_model.embed_subword.subword_id_to_char_ids
@@ -48,8 +49,14 @@ def main():
     max_char_len = max(len(char_ids) for char_ids in subword_id_to_char_ids.values())
     hidden_size = cfg.model.tts_config.backbone_config.hidden_size
 
-    # load checkpoint
-    weights = load_file(args.model)
+    # load checkpoint (support both safetensors and pytorch formats)
+    if model_path.endswith(".safetensors"):
+        weights = load_file(model_path)
+    else:
+        weights = torch.load(model_path, map_location="cpu", weights_only=True)
+        # Handle nested state_dict if present
+        if "state_dict" in weights:
+            weights = weights["state_dict"]
     # select tts model weights, strip off one nested layer
     weights = {k[len("tts_model."):]: v for k, v in weights.items() if "tts_model." in k}
 
@@ -122,7 +129,7 @@ def main():
     weights = {"model." + k: v for k, v in weights.items()}
 
     # save weights
-    safetensors_path = os.path.join(args.outdir, "model.safetensors")
+    safetensors_path = os.path.join(outdir, "model.safetensors")
     save_file(weights, safetensors_path)
     print(f"Saved weights for vllm model")
     weight_map = {name: "model.safetensors" for name in weights.keys()}
@@ -132,7 +139,7 @@ def main():
         },
         "weight_map": weight_map,
     }
-    index_path = os.path.join(args.outdir, "model.safetensors.index.json")
+    index_path = os.path.join(outdir, "model.safetensors.index.json")
     with open(index_path, "w") as f:
         json.dump(index, f, indent=2)
     print(f"Saved model index")
@@ -141,7 +148,20 @@ def main():
     flat_config = {"architectures": ["EarTTSForCausalLM"], "model_type": "eartts"}
     # not using vocab size of the backbone model
     flat_config["vocab_size"] = 1
-    # forward backbone configs
+
+    # Parse backbone config exactly as NeMo does to get all defaults from transformers
+    backbone_type = cfg.model.tts_config.get("backbone_type", None)
+    backbone_config_dict = OmegaConf.to_container(
+        cfg.model.tts_config.backbone_config, resolve=True
+    ) if cfg.model.tts_config.get("backbone_config") else {}
+    
+    # Create AutoConfig the same way NeMo does - this fills in all defaults
+    parsed_backbone_config = AutoConfig.for_model(backbone_type, **backbone_config_dict)
+    
+    # Store the backbone type for vllm to use
+    flat_config["backbone_type"] = backbone_type
+    
+    # Forward all backbone configs from the parsed AutoConfig (includes defaults)
     for key in [
         "hidden_size",
         "intermediate_size",
@@ -149,14 +169,30 @@ def main():
         "num_attention_heads",
         "num_key_value_heads",
         "head_dim",
+        "max_position_embeddings",
+        "rope_theta",
+        "rope_local_base_freq",
+        "sliding_window",
+        "layer_types",
     ]:
-        flat_config[key] = cfg.model.tts_config.backbone_config[key]
+        if hasattr(parsed_backbone_config, key):
+            value = getattr(parsed_backbone_config, key)
+            # convert to list if it's a tuple or other iterable (except str)
+            if hasattr(value, '__iter__') and not isinstance(value, (str, dict)):
+                value = list(value)
+            flat_config[key] = value
     # forward overall configs
     for key in ["latent_size", "codebook_size", "num_quantizers", "exponent"]:
         flat_config[key] = cfg.model.tts_config[key]
     # forward mog head configs
     for key in ["num_layers", "low_rank", "num_predictions", "min_log_std", "eps"]:
         flat_config[f"mog_{key}"] = cfg.model.tts_config.mog_head_config[key]
+
+    # forward inference configs (with name mapping for vLLM model)
+    # num_iter is hardcoded to 8 in native model's _get_generation_config
+    flat_config["num_iter"] = 8
+    flat_config["noise_scale"] = cfg.model.get("inference_noise_scale", 0.8)
+    flat_config["top_p_or_k"] = cfg.model.get("inference_top_p_or_k", 0.8)
 
     # configuration of the embedding module
     flat_config["emb_backbone_config"] = OmegaConf.to_container(
@@ -189,10 +225,11 @@ def main():
     ]
     flat_config["custom_outputs"] = ["acoustic_tokens"]
 
-    with open(os.path.join(args.outdir, "config.json"), "w") as f:
+    with open(os.path.join(outdir, "config.json"), "w") as f:
         json.dump(flat_config, f, indent=2)
     print("Saved vllm config")
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    convert(args.outdir, args.config, args.model)

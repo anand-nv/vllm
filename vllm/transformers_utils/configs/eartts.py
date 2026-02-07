@@ -19,7 +19,8 @@ class EarTTSConfig(PretrainedConfig):
         num_key_value_heads: int = 16,
         head_dim: int = 72,
         vocab_size: int = 1,
-        max_position_embeddings: int = 8192,
+        max_position_embeddings: int = 131072,
+        dtype: str = "float32",
 
         # custom config, related sampling
         num_quantizers: int = 31,
@@ -37,13 +38,13 @@ class EarTTSConfig(PretrainedConfig):
         enable_guidance: bool = False,
 
         # Gemma3-specific attributes required by Gemma3Model
-        query_pre_attn_scalar: float = 256.0,  # Default attention scaling
+        query_pre_attn_scalar: float = 256.0,  # Matches HF Gemma3TextConfig default
         attention_bias: bool = False,  # Gemma models typically don't use attention bias
         rms_norm_eps: float = 1e-6,  # RMS normalization epsilon
-        layer_types: Optional[list] = None,  # Layer types ("global_attention" or "sliding_attention")
+        layer_types: Optional[list] = None,  # Layer types ("full_attention" or "sliding_attention")
         sliding_window: Optional[int] = 4096,  # Sliding window size for local attention
         rope_local_base_freq: float = 10000.0,  # RoPE base frequency for local attention
-        rope_theta: float = 10000.0,  # RoPE theta for global attention
+        rope_theta: float = 1000000.0,  # RoPE base frequency for global attention (NeMo uses 1M)
         rope_scaling: Optional[dict] = None,  # RoPE scaling configuration
         hidden_activation: str = "gelu_pytorch_tanh",  # Activation function (required by Gemma3)
         tie_word_embeddings: bool = True,  # Whether embeddings are tied

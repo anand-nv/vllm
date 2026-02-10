@@ -388,7 +388,7 @@ class EarTTSInputEmbedding(nn.Module):
                 self.null_emb,
                 cfg_metadata.uncond_token_mask,
                 cfg_metadata.num_tokens,
-                cfg_metadata.max_num_tokens,
+                cfg_metadata.padded_num_tokens,
             )
 
         # prepare total embedding by adding all components
@@ -551,7 +551,7 @@ class MoGHead(nn.Module):
                 cfg_metadata.uncond_logits_indices,
                 cfg_metadata.guidance_scales,
                 cfg_metadata.num_cfg_pairs,
-                cfg_metadata.max_num_reqs,
+                cfg_metadata.padded_num_tokens,
             )
 
         logits = self.proj_logits(x)
@@ -748,7 +748,7 @@ class MaskGITSampler(nn.Module):
                     cfg_metadata.cond_logits_indices,
                     cfg_metadata.uncond_logits_indices,
                     cfg_metadata.num_cfg_pairs,
-                    cfg_metadata.max_num_reqs,
+                    cfg_metadata.padded_num_tokens,
                 )
 
             cnt += k

@@ -63,6 +63,7 @@ class EarTTSConfig(PretrainedConfig):
         use_subword_flag_emb: bool = True,
         use_bos_eos_emb: bool = True,
         use_gated_fusion_for_text_audio: bool = True,
+        use_audio_prompt_frozen_projection: bool = False,
         **kwargs,
     ):
         # gemma 3 config
@@ -119,6 +120,7 @@ class EarTTSConfig(PretrainedConfig):
         self.use_subword_flag_emb = use_subword_flag_emb
         self.use_bos_eos_emb = use_bos_eos_emb
         self.use_gated_fusion_for_text_audio = use_gated_fusion_for_text_audio
+        self.use_audio_prompt_frozen_projection = use_audio_prompt_frozen_projection
         
         super().__init__(**kwargs)
 

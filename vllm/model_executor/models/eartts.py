@@ -345,6 +345,13 @@ class EarTTSInputEmbedding(nn.Module):
                 hidden_size, hidden_size, hidden_size, config.num_quantizers
             )
 
+        self.use_audio_prompt_frozen_projection = config.use_audio_prompt_frozen_projection
+        if self.use_audio_prompt_frozen_projection:
+            self.audio_prompt_projection_W = nn.Parameter(
+                torch.empty(hidden_size, hidden_size),
+                requires_grad=False,
+            )
+
     def forward(
         self,
         acoustic_tokens: torch.Tensor,
@@ -369,7 +376,19 @@ class EarTTSInputEmbedding(nn.Module):
 
         acoustic_tokens = acoustic_tokens.transpose(0, 1)  # 31 x BT
         audio_emb = sum(emb(acoustic_tokens[i]) for i, emb in enumerate(self.rvq_embs))  # BT x latent_size
-        audio_emb = self.embed_code(audio_emb) + bos_emb  # BT x hidden_size
+        audio_emb = self.embed_code(audio_emb)  # BT x hidden_size
+
+        if self.use_audio_prompt_frozen_projection:
+            # need to compute audio_prompt_lantent and use it instead of audio_emb
+            audio_prompt_lantent = torch.nn.functional.linear(audio_emb, self.audio_prompt_projection_W.T)
+            # WARNING! this is a hack! this only works if bos_mask is [0, 0, ..., 0, 1] for prompt
+            # requests and [0] for decoding ones. NeMo does pre_bos_mask = (bos_mask.cumsum(dim=1) == 0),
+            # but since we have multiple bos_mask concatenated, we can't do that.
+            # we just invert the bos_mask
+            pre_bos_mask = (bos_mask == 0).unsqueeze(-1)  # BT x 1
+            audio_emb = torch.where(pre_bos_mask, audio_prompt_lantent, audio_emb)
+
+        audio_emb = audio_emb + bos_emb 
 
         # embed text tokens by expanding them to chars and passing through transformer
         # apply the mask that turns this embedding to zeros for prefill tokens

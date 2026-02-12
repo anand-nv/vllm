@@ -576,22 +576,16 @@ class NemotronHForCausalLM(
         positions: torch.Tensor,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
-        acoustic_embeds: Optional[torch.Tensor] = None,
-        asr_token_ids: Optional[torch.Tensor] = None,
         **kwargs,
     ):
-        # Compute combined embeddings inside the model
-        # combined = acoustic_embeds + embed_tokens(text_token_ids) + embed_asr_tokens(asr_token_ids)
-        inputs_embeds = acoustic_embeds + self.model.embed_tokens(input_ids) + self.model.embed_asr_tokens(asr_token_ids)
-
+        inputs_embeds = kwargs.get("combined_embeds", None)
+        #input_asr_ids = kwargs.get("input_asr_ids", None) # currently not used
         hidden_states = self.model(
             input_ids, positions, intermediate_tensors, inputs_embeds, input_asr_ids=None
         )
-        # Compute ASR tokens (always greedy/argmax - no sampling)
         asr_logits = self.logits_processor(self.asr_head, hidden_states)
-        asr_tokens = torch.argmax(asr_logits, dim=1)
-        # Return: hidden_states, asr_tokens (custom output)
-        return hidden_states, asr_tokens
+        asr_tokens = torch.argmax(asr_logits, dim=1) # sampling will be done outside the vllm model engine
+        return hidden_states, self.compute_logits(hidden_states), asr_tokens, asr_logits
 
     def compute_logits(
         self,

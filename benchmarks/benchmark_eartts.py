@@ -1,3 +1,6 @@
+import os
+os.environ["VLLM_ATTENTION_BACKEND"] = "TRITON_ATTN"
+
 import argparse
 import asyncio
 import time

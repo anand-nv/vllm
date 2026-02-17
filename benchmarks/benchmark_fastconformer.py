@@ -41,6 +41,7 @@ async def run_request(
     engine: AsyncLLM,
     sampling_params: SamplingParams,
     num_frames: int,
+    frames_per_step: int,
     metrics: Dict[str, Any],
     request_id: str,
 ):
@@ -57,7 +58,7 @@ async def run_request(
 
     try:
         # First frame (prefill)
-        prompt_len = 1
+        prompt_len = frames_per_step
         i = 0
         inputs = {
             "prompt_token_ids": [0] * prompt_len,
@@ -79,7 +80,7 @@ async def run_request(
 
             # Get the acoustic embedding from custom_outputs
             acoustic_emb = output.outputs[0].custom_outputs.get("acoustic_emb")
-            frame_count += 1
+            frame_count += frames_per_step
 
             if last_frame_time is not None:
                 # Record inter-frame latency
@@ -101,10 +102,10 @@ async def run_request(
             # Prepare next decode step inputs
             next_inputs = {
                 "audio": audio[
-                    i * SAMPLES_PER_FRAME : (i + 1) * SAMPLES_PER_FRAME
-                ].unsqueeze(0)
+                    i * SAMPLES_PER_FRAME : (i + frames_per_step) * SAMPLES_PER_FRAME
+                ].view(frames_per_step, SAMPLES_PER_FRAME)
             }
-            i += 1
+            i += frames_per_step
             await engine.append_request(
                 request_id=request_id, custom_inputs=next_inputs
             )
@@ -193,6 +194,7 @@ async def worker(
     engine: AsyncLLM,
     sampling_params: SamplingParams,
     num_frames: int,
+    frames_per_step: int,
     metrics: Dict[str, Any],
 ):
     """
@@ -209,7 +211,7 @@ async def worker(
 
         request_id = f"benchmark-w{worker_id}-{uuid.uuid4()}"
         # Run the request *outside* the lock
-        await run_request(engine, sampling_params, num_frames, metrics, request_id)
+        await run_request(engine, sampling_params, num_frames, frames_per_step, metrics, request_id)
 
 
 def init_metrics(num_requests: int):
@@ -304,6 +306,12 @@ async def main():
         action="store_true",
         help="Enforce eager mode (disable CUDA graphs)",
     )
+    parser.add_argument(
+        "--frames-per-step",
+        default=1,
+        type=int,
+        help="Number of frames to feed per step (change num_output_tokens_per_step in config.json!)",
+    )
     args = parser.parse_args()
 
     print("Starting FastConformer benchmark...")
@@ -322,6 +330,7 @@ async def main():
         "enable_prefix_caching": False,
         "enforce_eager": args.enforce_eager,
         "disable_log_stats": True,
+        "compilation_config": {"cudagraph_mode": "FULL"},
     }
     if args.load_format == "dummy":
         engine_args_kwargs["load_format"] = "dummy"
@@ -361,6 +370,7 @@ async def main():
                         engine=engine,
                         sampling_params=sampling_params,
                         num_frames=args.num_frames,
+                        frames_per_step=args.frames_per_step,
                         metrics=metrics,
                     )
                 )

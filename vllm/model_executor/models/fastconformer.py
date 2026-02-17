@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Iterable
+from re import X
 from typing import Optional
 import weakref
 
@@ -455,16 +456,14 @@ class FastConformerCTC(nn.Module):
         inputs_embeds: Optional[torch.Tensor] = None,
         audio: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        emb, mel = self.preprocessor(audio)
+        x = self.preprocessor(audio)
         if self.xscale:
-            emb = emb * self.xscale
-        x = emb
+            x = x * self.xscale
         for blk in self.blocks:
             x = blk(x)
         if self.adapter is not None:
             x = self.adapter(x)
-        #print(f"x {x.shape}, emb {emb.shape}, mel {mel.shape}", flush=True)
-        return x, x, emb, mel.view(-1, 8, 128)
+        return x, x
 
     def compute_logits(
         self,

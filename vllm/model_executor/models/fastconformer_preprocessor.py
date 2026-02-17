@@ -571,7 +571,7 @@ class FastConformerPreprocessor(nn.Module):
         """
         mel = self.mel_spec(audio.view(-1))  # frames x freq_bins
         emb = self.pre_encode(mel)  # frames/8 x 512
-        return emb, mel
+        return emb
 
     def load_weights(self, nemo: dict[str, torch.Tensor]):
         """Load weights from FastConformer checkpoint."""

@@ -270,22 +270,17 @@ class SlidingWindowSpec(AttentionSpec):
         return (cdiv(num_tokens, self.block_size) + 1) * self.page_size_bytes
 
 @dataclass(frozen=True)
-class FastConformerSpec(AttentionSpec):
-    sliding_window: int
+class FastConformerConvSpec(KVCacheSpec):
+    shape: tuple[int ,...]
+    dtype: torch.dtype
 
     @property
     def page_size_bytes(self) -> int:
-        return (
-            2 * self.sliding_window * self.num_kv_heads * self.head_size *
-            get_dtype_size(self.dtype)
-        )
+        return prod(self.shape) * get_dtype_size(self.dtype)
 
     def max_memory_usage_bytes(self, vllm_config: VllmConfig) -> int:
-        return (
-            2 * vllm_config.scheduler_config.max_num_seqs *
-            self.sliding_window * self.num_kv_heads * self.head_size *
-            get_dtype_size(self.dtype)
-        )
+        max_model_len = vllm_config.model_config.max_model_len
+        return cdiv(max_model_len, self.block_size) * self.page_size_bytes
 
 
 @dataclass(frozen=True)

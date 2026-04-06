@@ -1014,7 +1014,31 @@ def _get_kv_cache_groups_uniform_page_size(
     # is the minimum number of layers among all attention types. Need a better
     # strategy if we want to support more complex patterns (e.g., 20 full + 30
     # sw, where the group size should be 10).
-    group_size = min([len(layers) for layers in same_type_layers.values()])
+    # HACK(vklimkov): Add additional logic that handles uneven case, for ex.
+    # fastconformer has 17 attn layers and 21 conv layers. Here it makes sense
+    # to pad to 21. This logic checks what is better: to pad to min or to max.
+    def compute_total_padding(group_size: int) -> int:
+        total = 0
+        for layers in same_type_layers.values():
+            remainder = len(layers) % group_size
+            if remainder != 0:
+                total += group_size - remainder
+        return total
+
+    layer_counts = [len(layers) for layers in same_type_layers.values()]
+    min_group_size = min(layer_counts)
+    max_group_size = max(layer_counts)
+
+    padding_with_min = compute_total_padding(min_group_size)
+    padding_with_max = compute_total_padding(max_group_size)
+
+    # Prefer max (fewer groups) when padding is equal or less
+    if padding_with_max < padding_with_min:
+        group_size = max_group_size
+    else:
+        # original approach to pad to min number of layers per group
+        group_size = min_group_size
+    
     grouped_layers = []
     for layers in same_type_layers.values():
         num_padding_layers = group_size - len(layers) % group_size
@@ -1099,7 +1123,6 @@ def get_kv_cache_config_from_groups(
         group_size = max(len(group.layer_names) for group in kv_cache_groups)
 
         page_size = get_uniform_page_size(kv_cache_specs)
-        print(f"page_size: {page_size}")
         assert group_size > 0, "group_size must be greater than 0"
         num_blocks = get_num_blocks(
             vllm_config, group_size, available_memory, page_size

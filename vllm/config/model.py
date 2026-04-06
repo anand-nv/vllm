@@ -105,6 +105,57 @@ _RUNNER_CONVERTS: dict[RunnerType, list[ConvertType]] = {
 }
 
 
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
+class CustomInputSpec:
+    """Specification for a custom input tensor.
+    
+    This defines the shape and dtype for custom inputs that will be provided
+    to the model via append_request.
+    """
+    name: str
+    """Name of the custom input"""
+    
+    dtype: Optional[Union[str, torch.dtype]] = None
+    """Data type of the tensor. Can be 'int32', 'int64', 'float16', 'float32', 
+    'bfloat16', or a torch.dtype. If None, model dtype is used."""
+    
+    dim: Optional[int] = None
+    """Dimension of the tensor. If None, shape is (batch_tokens,).
+    If specified, shape is (batch_tokens, dim)"""
+    
+    def get_torch_dtype(self) -> Optional[torch.dtype]:
+        if self.dtype is None:
+            return None
+
+        if isinstance(self.dtype, torch.dtype):
+            return self.dtype
+
+        # Convert dtype string to torch dtype.        
+        dtype_map = {
+            "int32": torch.int32,
+            "int64": torch.int64,
+            "float16": torch.float16,
+            "float32": torch.float32,
+            "bfloat16": torch.bfloat16,
+            "float": torch.float32,
+            "half": torch.float16,
+        }
+        
+        if self.dtype not in dtype_map:
+            raise ValueError(
+                f"Unsupported dtype: {self.dtype}. "
+                f"Supported: {list(dtype_map.keys())}"
+            )
+        
+        return dtype_map[self.dtype]
+    
+    def get_buffer_shape(self, max_tokens: int) -> tuple[int, ...]:
+        """Get the buffer shape for this input."""
+        if self.dim is None:
+            return (max_tokens,)
+        return (max_tokens, self.dim)
+
+
 @config
 @dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class ModelConfig:
@@ -205,14 +256,6 @@ class ModelConfig:
     OpenAI Chat Completions API. -1 means no cap, i.e. all (output_length *
     vocab_size) logprobs are allowed to be returned and it may cause OOM."""
     logprobs_mode: LogprobsMode = "raw_logprobs"
-    """Indicates the content returned in the logprobs and prompt_logprobs.
-    Supported mode:
-    1) raw_logprobs, 2) processed_logprobs, 3) raw_logits, 4) processed_logits.
-    Raw means the values before applying any logit processors, like bad words.
-    Processed means the values after applying all processors, including
-    temperature and top_k/top_p.
-    """
-    return_hidden_states: bool = False
     """Whether to return the last layer hidden states of the model."""
     disable_sliding_window: bool = False
     """Whether to disable sliding window. If True, we will disable the sliding
@@ -287,6 +330,11 @@ class ModelConfig:
     definitions"""
     io_processor_plugin: Optional[str] = None
     """IOProcessor plugin name to load at model startup"""
+    custom_input_specs: Optional[list[CustomInputSpec]] = None
+    """List of custom input specifications. Each spec defines name, dtype, and shape
+    for a custom input that will be provided via append_request. If specified, the model
+    will wait for custom inputs before scheduling.
+    """
 
     # Pooler config
     pooler_config: Optional[PoolerConfig] = None
@@ -683,6 +731,21 @@ class ModelConfig:
             }
 
             self.multimodal_config = MultiModalConfig(**mm_config_kwargs)
+
+        self.custom_input_specs = None
+        custom_specs_dict = getattr(self.hf_config, "custom_input_specs", None)
+        if custom_specs_dict:
+            self.custom_input_specs = []
+            try:
+                # parse the custom input specifications from hf_config
+                for spec_dict in custom_specs_dict:
+                    spec = CustomInputSpec(**spec_dict)
+                    self.custom_input_specs.append(spec)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Error parsing custom input specifications from hf_config: {e}"
+                ) from e
+        self.custom_outputs = getattr(self.hf_config, "custom_outputs", None)
 
         if self.disable_sliding_window:
             # Set after get_and_verify_max_len to ensure that max_model_len

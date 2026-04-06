@@ -27,6 +27,14 @@ if TYPE_CHECKING:
     from vllm.lora.request import LoRARequest
     from vllm.v1.core.kv_cache_utils import BlockHash
 
+# Suffix appended to conditional request IDs to create unconditional request IDs
+CFG_UNCOND_SUFFIX = ":cfg_uncond"
+
+
+def get_cfg_uncond_request_id(cond_request_id: str) -> str:
+    """Get the unconditional request ID from a conditional request ID."""
+    return f"{cond_request_id}{CFG_UNCOND_SUFFIX}"
+
 
 class Request:
     def __init__(
@@ -39,6 +47,7 @@ class Request:
         client_index: int = 0,
         arrival_time: Optional[float] = None,
         prompt_embeds: Optional[torch.Tensor] = None,
+        custom_inputs: Optional[dict[str, torch.Tensor]] = None,
         mm_features: Optional[list[MultiModalFeatureSpec]] = None,
         lora_request: Optional["LoRARequest"] = None,
         structured_output_request: Optional["StructuredOutputRequest"] = None,
@@ -46,7 +55,8 @@ class Request:
         priority: int = 0,
         trace_headers: Optional[Mapping[str, str]] = None,
         block_hasher: Optional[Callable[["Request"], list["BlockHash"]]] = None,
-        is_streaming: Optional[bool] = None,
+        # CFG (Classifier Free Guidance) related field
+        is_cfg_unconditional: bool = False,
     ) -> None:
         self.request_id = request_id
         self.client_index = client_index
@@ -63,8 +73,6 @@ class Request:
         self.use_structured_output = False
         self.events: list[EngineCoreEvent] = []
         self.stop_reason: Union[int, str, None] = None
-
-        self.is_streaming = is_streaming
 
         # P/D: Connector-specific KV transfer parameters.
         self.kv_transfer_params: Optional[dict[str, Any]] = None
@@ -89,10 +97,12 @@ class Request:
 
         self.prompt_token_ids = prompt_token_ids
         self.prompt_embeds = prompt_embeds
-        self.next_input_embeds: Optional[torch.Tensor] = None
-        # for a running request, scheduler will wait for event to be set.
-        # for new request, prompt embeds are used
-        self._next_input_embeds_ready = False
+        
+        # Custom inputs support
+        self.custom_inputs: Optional[dict[str, torch.Tensor]] = custom_inputs
+        # for a running request, scheduler will wait for the flag to be set
+        self.custom_inputs_ready = custom_inputs is not None
+        self.custom_inputs_num_consumed = 0
         self.num_prompt_tokens = length_from_prompt_token_ids_or_embeds(
             prompt_token_ids, prompt_embeds
         )
@@ -132,9 +142,15 @@ class Request:
 
         self.block_hashes: list[BlockHash] = []
         self.get_hash_new_full_blocks: Optional[Callable[[], list[BlockHash]]] = None
+        # Store the block_hasher for reuse (e.g., CFG cloning)
+        self._block_hasher = block_hasher
         if block_hasher is not None:
             self.get_hash_new_full_blocks = partial(block_hasher, self)
             self.block_hashes = self.get_hash_new_full_blocks()
+
+        # CFG (Classifier Free Guidance) related field
+        # True if this is the unconditional request in a CFG pair
+        self.is_cfg_unconditional = is_cfg_unconditional
 
     @classmethod
     def from_engine_core_request(
@@ -147,6 +163,7 @@ class Request:
             client_index=request.client_index,
             prompt_token_ids=request.prompt_token_ids,
             prompt_embeds=request.prompt_embeds,
+            custom_inputs=request.custom_inputs,
             mm_features=request.mm_features,
             sampling_params=request.sampling_params,
             pooling_params=request.pooling_params,
@@ -162,7 +179,6 @@ class Request:
             priority=request.priority,
             trace_headers=request.trace_headers,
             block_hasher=block_hasher,
-            is_streaming=request.is_streaming,
         )
 
     def append_output_token_ids(
@@ -219,18 +235,98 @@ class Request:
         events, self.events = self.events, []
         return events
 
-    def set_next_input_embeds(self, input_embeds: torch.Tensor) -> None:
-        self.next_input_embeds = input_embeds
-        self._next_input_embeds_ready = True
+    def set_custom_inputs(self, custom_inputs: dict[str, torch.Tensor]) -> None:
+        """Set custom inputs for the request."""
+        self.custom_inputs = custom_inputs
+        self.custom_inputs_ready = True
+        self.custom_inputs_num_consumed = 0
 
-    def read_next_input_embeds(self) -> Optional[torch.Tensor]:
-        # clear, so request does not get scheduled again, before
-        # another `set_next_input_embeds` is called
-        self._next_input_embeds_ready = False
-        return self.next_input_embeds
+    def read_custom_inputs(
+        self,
+        num_scheduled_tokens: int
+    ) -> Optional[dict[str, torch.Tensor]]:
+        """Read custom inputs for the scheduled tokens.
 
-    def has_next_input_embeds(self) -> bool:
-        return self._next_input_embeds_ready
+        For chunked prefill, this slices only the portion of custom_inputs
+        that corresponds to the tokens being scheduled in this iteration.
+        The _custom_inputs_ready flag is only cleared once all tokens have
+        been read.
+
+        Args:
+            num_scheduled_tokens: Number of tokens being scheduled in this iteration
+
+        Returns:
+            Sliced custom_inputs dict, or None if no custom inputs
+        """
+        assert self.custom_inputs
+
+        # Slice custom_inputs for only the scheduled tokens
+        start_idx = self.custom_inputs_num_consumed
+        end_idx = start_idx + num_scheduled_tokens
+
+        sliced_custom_inputs = {}
+        for input_name, input_tensor in self.custom_inputs.items():
+            sliced_custom_inputs[input_name] = input_tensor[start_idx:end_idx]
+            if end_idx > input_tensor.shape[0]:
+                raise ValueError(f"Custom input {input_name} has only {input_tensor.shape[0]} tokens, tried to read [{start_idx}:{end_idx}]")
+            if end_idx == input_tensor.shape[0]:
+                # All custom inputs have been consumed, need to wait for new ones
+                self.custom_inputs_ready = False
+
+        self.custom_inputs_num_consumed += num_scheduled_tokens
+        return sliced_custom_inputs
+
+    def has_custom_inputs(self) -> bool:
+        """Check if custom inputs are ready."""
+        return self.custom_inputs_ready
+
+    def create_cfg_unconditional_clone(self) -> "Request":
+        """Create an unconditional clone for CFG (Classifier Free Guidance).
+
+        This creates a paired request that shares input data (by reference)
+        with the original conditional request. The unconditional request
+        is used for CFG during inference.
+
+        The unconditional request ID is derived from this request's ID by
+        appending the CFG_UNCOND_SUFFIX. Use get_cfg_uncond_request_id() to
+        convert between the two.
+
+        Returns:
+            A new Request that is the unconditional pair of this request.
+        """
+        uncond_request_id = get_cfg_uncond_request_id(self.request_id)
+
+        # Create the unconditional clone sharing input data by reference
+        uncond_request = Request(
+            request_id=uncond_request_id,
+            # Share input data by reference (not copied)
+            prompt_token_ids=self.prompt_token_ids,
+            prompt_embeds=self.prompt_embeds,
+            custom_inputs=self.custom_inputs,
+            mm_features=self.mm_features,
+            # Copy sampling/pooling params (may need different settings later)
+            sampling_params=self.sampling_params,
+            pooling_params=self.pooling_params,
+            eos_token_id=self.eos_token_id,
+            client_index=self.client_index,
+            arrival_time=self.arrival_time,
+            lora_request=self.lora_request,
+            structured_output_request=None,  # Uncond doesn't need structured output
+            cache_salt=self.cache_salt,
+            priority=self.priority,
+            trace_headers=self.trace_headers,
+            # Reuse the same block_hasher from this request
+            block_hasher=self._block_hasher,
+            # CFG-specific field
+            is_cfg_unconditional=True,
+        )
+
+        # Sync custom inputs state
+        uncond_request.custom_inputs_ready = self.custom_inputs_ready
+        uncond_request.custom_inputs_num_consumed = self.custom_inputs_num_consumed
+
+        return uncond_request
+
 
 class RequestStatus(enum.IntEnum):
     """Status of a request."""

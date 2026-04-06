@@ -274,6 +274,7 @@ class RequestState:
         stop_reason: int | str | None,
         kv_transfer_params: dict[str, Any] | None = None,
         routed_experts: np.ndarray | None = None,
+        new_hidden_states: torch.Tensor | None = None,
     ) -> RequestOutput | PoolingRequestOutput | None:
         finished = finish_reason is not None
         final_only = self.output_kind == RequestOutputKind.FINAL_ONLY
@@ -315,7 +316,8 @@ class RequestState:
             )
 
         output = self._new_completion_output(
-            new_token_ids, finish_reason, stop_reason, routed_experts
+            new_token_ids, finish_reason, stop_reason, routed_experts,
+            new_hidden_states
         )
 
         if self.parent_req is None:
@@ -379,6 +381,7 @@ class RequestState:
         finish_reason: FinishReason | None,
         stop_reason: int | str | None,
         routed_experts: np.ndarray | None = None,
+        hidden_states: torch.Tensor | None = None,
     ) -> CompletionOutput:
         assert self.detokenizer is not None
         assert self.logprobs_processor is not None
@@ -399,6 +402,7 @@ class RequestState:
             index=self.request_index,
             text=text,
             token_ids=token_ids,
+            hidden_states=hidden_states,
             routed_experts=routed_experts,
             logprobs=logprobs,
             cumulative_logprob=self.logprobs_processor.cumulative_logprob,
@@ -612,6 +616,7 @@ class OutputProcessor:
             )
 
             new_token_ids = engine_core_output.new_token_ids
+            new_hidden_states = engine_core_output.new_hidden_states
             pooling_output = engine_core_output.pooling_output
             finish_reason = engine_core_output.finish_reason
             stop_reason = engine_core_output.stop_reason
@@ -643,6 +648,7 @@ class OutputProcessor:
                 stop_reason,
                 kv_transfer_params,
                 routed_experts,
+                new_hidden_states,
             ):
                 if req_state.streaming_input:
                     request_output.finished = False

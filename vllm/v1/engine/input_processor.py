@@ -248,6 +248,9 @@ class InputProcessor:
 
         current_platform.validate_request(processed_inputs, params)
 
+        # TODO: pop custom inputs here, add validation later
+        custom_inputs = processed_inputs.pop("custom_inputs", None) if isinstance(processed_inputs, dict) else None
+
         encoder_inputs, decoder_inputs = split_enc_dec_input(processed_inputs)
         self._validate_model_inputs(encoder_inputs, decoder_inputs)
 
@@ -322,6 +325,7 @@ class InputProcessor:
             request_id=request_id,
             prompt_token_ids=prompt_token_ids,
             prompt_embeds=prompt_embeds,
+            custom_inputs=custom_inputs,
             mm_features=mm_features,
             sampling_params=sampling_params,
             pooling_params=pooling_params,
